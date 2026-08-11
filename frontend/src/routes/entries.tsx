@@ -67,6 +67,34 @@ function EntriesPage() {
   const [dateTo, setDateTo] = useState("");
   const [editingEntry, setEditingEntry] = useState<Entry | null>(null);
   const [viewingEntry, setViewingEntry] = useState<Entry | null>(null);
+  const [slotMonth, setSlotMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [activeSlot, setActiveSlot] = useState<1 | 2 | 3 | null>(null);
+
+  function applySlot(slot: 1 | 2 | 3) {
+    const [y, m] = slotMonth.split("-").map(Number);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    let start: number;
+    let end: number;
+    if (slot === 1) {
+      start = 1;
+      end = 10;
+    } else if (slot === 2) {
+      start = 11;
+      end = 20;
+    } else {
+      start = 21;
+      end = new Date(y, m, 0).getDate();
+    }
+    setDateFrom(`${slotMonth}-${pad(start)}`);
+    setDateTo(`${slotMonth}-${pad(end)}`);
+    setActiveSlot(slot);
+  }
+
+  function clearSlot() {
+    setDateFrom("");
+    setDateTo("");
+    setActiveSlot(null);
+  }
 
   const filtered = useMemo(
     () =>
@@ -133,6 +161,64 @@ function EntriesPage() {
               className="rounded-xl border border-input bg-card px-3 py-2 text-sm outline-none"
             />
           </div>
+        </div>
+      </div>
+
+      {/* Slot-wise quick filter */}
+      <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-end">
+        <div className="flex flex-col gap-0.5">
+          <label className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            Month
+          </label>
+          <input
+            type="month"
+            value={slotMonth}
+            onChange={(e) => {
+              setSlotMonth(e.target.value);
+              setActiveSlot(null);
+            }}
+            className="rounded-xl border border-input bg-card px-3 py-2 text-sm outline-none"
+          />
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          <button
+            onClick={() => applySlot(1)}
+            className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${
+              activeSlot === 1
+                ? "bg-primary text-primary-foreground"
+                : "border border-border bg-card text-muted-foreground hover:bg-muted"
+            }`}
+          >
+            1 – 10
+          </button>
+          <button
+            onClick={() => applySlot(2)}
+            className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${
+              activeSlot === 2
+                ? "bg-primary text-primary-foreground"
+                : "border border-border bg-card text-muted-foreground hover:bg-muted"
+            }`}
+          >
+            11 – 20
+          </button>
+          <button
+            onClick={() => applySlot(3)}
+            className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${
+              activeSlot === 3
+                ? "bg-primary text-primary-foreground"
+                : "border border-border bg-card text-muted-foreground hover:bg-muted"
+            }`}
+          >
+            21 – 31
+          </button>
+          {activeSlot && (
+            <button
+              onClick={clearSlot}
+              className="rounded-full border border-border bg-card px-3 py-1.5 text-xs font-semibold text-muted-foreground hover:bg-muted"
+            >
+              Clear
+            </button>
+          )}
         </div>
       </div>
 
