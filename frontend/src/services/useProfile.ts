@@ -60,3 +60,16 @@ export async function updateLastLogin(uid: string): Promise<void> {
     // silent fail — don't block login flow if this fails
   }
 }
+
+export interface EditableProfileFields {
+  name: string;
+  mobile: string;
+  base: string;
+  pfNo: string;
+  division: string;
+  tteLobbyId: string;
+}
+
+export async function updateOwnProfile(uid: string, patch: EditableProfileFields): Promise<void> {
+  await setDoc(doc(db, "users", uid), patch, { merge: true });
+}

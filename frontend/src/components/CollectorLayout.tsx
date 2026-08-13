@@ -52,6 +52,13 @@ export function CollectorLayout({ children }: { children: ReactNode }) {
             <button className="grid h-10 w-10 place-items-center rounded-full text-muted-foreground hover:bg-muted">
               <Bell className="h-5 w-5" />
             </button>
+            <Link
+              to="/profile"
+              aria-label="Profile"
+              className="grid h-10 w-10 place-items-center rounded-full text-muted-foreground hover:bg-muted"
+            >
+              <User className="h-5 w-5" />
+            </Link>
             <button
               onClick={() => setConfirmLogout(true)}
               aria-label="Logout"

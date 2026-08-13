@@ -35,6 +35,7 @@ function NewComplaintPage() {
   const [priority, setPriority] = useState<ComplaintPriority>("Medium");
   const [done, setDone] = useState<{ number: number } | null>(null);
   const [showShare, setShowShare] = useState(false);
+  const [showFormShare, setShowFormShare] = useState(false);
 
   if (authLoading || !user || !profile) return null;
 
@@ -205,12 +206,33 @@ function NewComplaintPage() {
         </div>
 
         <button
+          type="button"
+          onClick={() => setShowFormShare(true)}
+          className="flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-primary/40 bg-primary-soft text-sm font-semibold text-primary"
+        >
+          <Share2 className="h-4 w-4" /> Send to Commercial Control / Officer
+        </button>
+
+        <button
           type="submit"
           className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-primary text-sm font-bold uppercase tracking-wide text-primary-foreground shadow-card"
         >
           <Send className="h-4 w-4" /> Submit Complaint
         </button>
       </form>
+
+      {showFormShare && (
+        <ContactShareModal
+          title="Commercial Control / Officer"
+          message={
+            `Complaint (draft) — ${category}\n` +
+            `Train: ${train || "—"}${station ? ` · Station: ${station}` : ""}\n` +
+            `Priority: ${priority}\n\n` +
+            `${description || "(no description yet)"}`
+          }
+          onClose={() => setShowFormShare(false)}
+        />
+      )}
     </CollectorLayout>
   );
 }

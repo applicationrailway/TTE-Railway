@@ -67,6 +67,21 @@ function exportSlotToExcel(rows: Entry[], slotLabel: string) {
     Working: e.workingIn,
     Squad: e.squadName || "—",
     Status: e.status,
+    "A Cases": e.A?.cases ?? 0,
+    "A Amount": e.A?.amount ?? 0,
+    "B Cases": e.B?.cases ?? 0,
+    "B Amount": e.B?.amount ?? 0,
+    "C Cases": e.C?.cases ?? 0,
+    "C Amount": e.C?.amount ?? 0,
+    "D Cases": e.D?.cases ?? 0,
+    "D Amount": e.D?.amount ?? 0,
+    "E Cases": e.E?.cases ?? 0,
+    "E Amount": e.E?.amount ?? 0,
+    "Smoking Cases": e.smoking?.cases ?? 0,
+    "Smoking Amount": e.smoking?.amount ?? 0,
+    "Littering Cases": e.litteringCases?.cases ?? 0,
+    "Littering Amount": e.litteringCases?.amount ?? 0,
+    "Doctor Fee": e.doctorFee ?? 0,
     "Total Cases": e.totalCases,
     "Total Amount": e.totalAmount,
   }));
@@ -111,10 +126,10 @@ function EntriesPage() {
   const [dateTo, setDateTo] = useState("");
   const [editingEntry, setEditingEntry] = useState<Entry | null>(null);
   const [viewingEntry, setViewingEntry] = useState<Entry | null>(null);
-  const [slotMonth, setSlotMonth] = useState(() => new Date().toISOString().slice(0, 7));
-  const [activeSlot, setActiveSlot] = useState<1 | 2 | 3 | null>(null);
+ const [slotMonth, setSlotMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [activeSlot, setActiveSlot] = useState<1 | 2 | 3 | 4 | null>(null);
 
-  function applySlot(slot: 1 | 2 | 3) {
+  function applySlot(slot: 1 | 2 | 3 | 4) {
     const [y, m] = slotMonth.split("-").map(Number);
     const pad = (n: number) => String(n).padStart(2, "0");
     let start: number;
@@ -125,15 +140,17 @@ function EntriesPage() {
     } else if (slot === 2) {
       start = 11;
       end = 20;
-    } else {
+    } else if (slot === 3) {
       start = 21;
+      end = new Date(y, m, 0).getDate();
+    } else {
+      start = 1;
       end = new Date(y, m, 0).getDate();
     }
     setDateFrom(`${slotMonth}-${pad(start)}`);
     setDateTo(`${slotMonth}-${pad(end)}`);
     setActiveSlot(slot);
   }
-
   function clearSlot() {
     setDateFrom("");
     setDateTo("");
@@ -255,6 +272,16 @@ function EntriesPage() {
           >
             21 – 31
           </button>
+          <button
+            onClick={() => applySlot(4)}
+            className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${
+              activeSlot === 4
+                ? "bg-primary text-primary-foreground"
+                : "border border-border bg-card text-muted-foreground hover:bg-muted"
+            }`}
+          >
+            Full Month (1 – 31)
+          </button>
           {activeSlot && (
             <button
               onClick={clearSlot}
@@ -269,7 +296,13 @@ function EntriesPage() {
      {/* Slot summary — only shown when a slot is active */}
       {activeSlot && (() => {
         const slotLabel =
-          (activeSlot === 1 ? "1–10" : activeSlot === 2 ? "11–20" : "21–31") +
+          (activeSlot === 1
+            ? "1–10"
+            : activeSlot === 2
+              ? "11–20"
+              : activeSlot === 3
+                ? "21–31"
+                : "Full Month") +
           " " +
           new Date(`${slotMonth}-01`).toLocaleDateString("en-IN", { month: "long", year: "numeric" });
         const totalCases = filtered.reduce((a, e) => a + e.totalCases, 0);

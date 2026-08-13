@@ -9,11 +9,25 @@ export interface OfficerContact {
 // ⚠️ DEMO DATA — replace with real officer details before going live
 export const OFFICER_CONTACTS: OfficerContact[] = [
   {
-    id: "commercial-control",
-    name: "Commercial Control Room",
+    id: "commercial-control-ngp",
+    name: "Commercial Control — NGP Division",
     designation: "Commercial Control",
-    mobile: "919876500001",
-    email: "commercial.control@demo-railway.gov.in",
+    mobile: "919876500011",
+    email: "commercial.control.ngp@demo-railway.gov.in",
+  },
+  {
+    id: "commercial-control-bsp",
+    name: "Commercial Control — BSP Division",
+    designation: "Commercial Control",
+    mobile: "919876500012",
+    email: "commercial.control.bsp@demo-railway.gov.in",
+  },
+  {
+    id: "commercial-control-nagpur-east",
+    name: "Commercial Control — Nagpur East Division",
+    designation: "Commercial Control",
+    mobile: "919876500013",
+    email: "commercial.control.east@demo-railway.gov.in",
   },
   {
     id: "sr-dcm",

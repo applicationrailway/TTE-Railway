@@ -4,7 +4,8 @@ import { CollectorLayout } from "@/components/CollectorLayout";
 import { useAuth } from "@/services/AuthContext";
 import { fetchMyComplaints } from "@/services/complaints";
 import { formatDate, type ComplaintStatus } from "@/lib/format";
-import { FileText, Plus, Train } from "lucide-react";
+import { FileText, Plus, Train, ChevronDown, ChevronUp } from "lucide-react";
+import { useState } from "react";
 
 export const Route = createFileRoute("/complaints")({
   head: () => ({ meta: [{ title: "Complaint History · TC System" }] }),
@@ -25,6 +26,7 @@ function ComplaintsPage() {
     queryFn: () => fetchMyComplaints(user!.uid),
     enabled: !!user,
   });
+  const [openId, setOpenId] = useState<string | undefined>(undefined);
 
   if (authLoading || !user) return null;
 
@@ -72,10 +74,61 @@ function ComplaintsPage() {
                   {c.status}
                 </span>
               </div>
-              <p className="mt-3 line-clamp-2 text-sm text-muted-foreground">{c.description}</p>
+              <p className={`mt-3 text-sm text-muted-foreground ${openId === c.id ? "" : "line-clamp-2"}`}>
+                {c.description}
+              </p>
+
+              {openId === c.id && (
+                <div className="mt-3 space-y-2 rounded-xl border border-border bg-muted/40 p-3 text-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      Priority
+                    </span>
+                    <span className="font-medium">{c.priority}</span>
+                  </div>
+                  {c.station && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        Station
+                      </span>
+                      <span className="font-medium">{c.station}</span>
+                    </div>
+                  )}
+                  {c.adminRemark && (
+                    <div>
+                      <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        Admin Update
+                      </div>
+                      <p className="mt-0.5">{c.adminRemark}</p>
+                    </div>
+                  )}
+                  {c.expectedResolutionDate && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        Expected Resolution
+                      </span>
+                      <span className="font-medium">{c.expectedResolutionDate}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
                 <span>Submitted {formatDate(c.createdAt)}</span>
-                <button className="font-semibold text-primary hover:underline">Open →</button>
+                <button
+                  onClick={() => setOpenId(openId === c.id ? undefined : c.id)}
+                  className="inline-flex items-center gap-1 font-semibold text-primary hover:underline"
+                >
+                  {openId === c.id ? (
+                    <>
+                      Close <ChevronUp className="h-3.5 w-3.5" />
+                    </>
+                  ) : (
+                    <>
+                      Open <ChevronDown className="h-3.5 w-3.5" />
+                    </>
+                  )}
+                </button>
               </div>
             </div>
           ))}

@@ -14,6 +14,7 @@ import {
   Briefcase,
   ChevronRight,
   AlertCircle,
+  User,
 } from "lucide-react";
 
 export const Route = createFileRoute("/home")({
@@ -121,7 +122,7 @@ function HomePage() {
         </div>
       </section>
 
-      {/* Today summary */}
+     {/* Today summary */}
       <section className="mb-6 grid grid-cols-2 gap-3">
         <div className="rounded-2xl bg-primary p-4 text-primary-foreground shadow-card">
           <div className="flex items-center gap-2 text-xs font-medium opacity-80">
