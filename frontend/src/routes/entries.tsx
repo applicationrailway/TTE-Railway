@@ -85,7 +85,37 @@ function exportSlotToExcel(rows: Entry[], slotLabel: string) {
     "Total Cases": e.totalCases,
     "Total Amount": e.totalAmount,
   }));
-  const ws = XLSX.utils.json_to_sheet(data);
+
+  const sum = (key: keyof (typeof data)[number]) =>
+    data.reduce((a, r) => a + (Number(r[key]) || 0), 0);
+
+  const grandTotalRow = {
+    "Sl No": "",
+    Date: "",
+    Train: "",
+    Working: "",
+    Squad: "",
+    Status: "GRAND TOTAL",
+    "A Cases": sum("A Cases"),
+    "A Amount": sum("A Amount"),
+    "B Cases": sum("B Cases"),
+    "B Amount": sum("B Amount"),
+    "C Cases": sum("C Cases"),
+    "C Amount": sum("C Amount"),
+    "D Cases": sum("D Cases"),
+    "D Amount": sum("D Amount"),
+    "E Cases": sum("E Cases"),
+    "E Amount": sum("E Amount"),
+    "Smoking Cases": sum("Smoking Cases"),
+    "Smoking Amount": sum("Smoking Amount"),
+    "Littering Cases": sum("Littering Cases"),
+    "Littering Amount": sum("Littering Amount"),
+    "Doctor Fee": sum("Doctor Fee"),
+    "Total Cases": sum("Total Cases"),
+    "Total Amount": sum("Total Amount"),
+  };
+
+  const ws = XLSX.utils.json_to_sheet([...data, grandTotalRow]);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Slot Entries");
   const filename = `Entries_${slotLabel.replace(/\s+/g, "_")}.xlsx`;

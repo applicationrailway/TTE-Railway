@@ -12,10 +12,10 @@ import {
   type CaseValue,
   type FareCaseValue,
 } from "@/services/sheetReport";
-import { fetchAllEntries } from "@/services/entries";
+import { fetchAllEntries, type Entry } from "@/services/entries";
 import { fetchAllUsers } from "@/services/users";
 import { useEffect, useRef, useState } from "react";
-import { Plus, Trash2, Download, Loader2 } from "lucide-react";
+import { Plus, Trash2, Download, Loader2, X, Printer } from "lucide-react";
 import { toast } from "sonner";
 import * as XLSX from "xlsx";
 
@@ -255,6 +255,209 @@ function exportStaffSummaryToExcel(rows: SheetRow[]) {
   toast.success(`Exported summary for ${staffAggs.length} staff`);
 }
 
+// ── Combined 10-day slot + Monthly statement — one row per staff ──────────
+interface SlotTotal { nc: number; amt: number; }
+interface CombinedStaffRow {
+  base: string;
+  name: string;
+  slot1: SlotTotal;
+  slot2: SlotTotal;
+  slot3: SlotTotal;
+  monthly: SlotTotal;
+}
+function buildCombinedRows(entries: Entry[], allUsers: { id: string; name: string; base: string }[], month: string) {
+  const monthEntries = entries.filter(
+    (e) => e.status === "submitted" && e.date.slice(0, 7) === month,
+  );
+
+  const map = new Map<string, CombinedStaffRow>();
+
+  for (const e of monthEntries) {
+    const user = allUsers.find((u) => u.id === e.collectorId);
+    const key = e.collectorId || e.collectorName || "unknown";
+    let row = map.get(key);
+    if (!row) {
+      row = {
+        base: user?.base ?? e.collectorBase ?? "",
+        name: user?.name ?? e.collectorName ?? "",
+        slot1: { nc: 0, amt: 0 },
+        slot2: { nc: 0, amt: 0 },
+        slot3: { nc: 0, amt: 0 },
+        monthly: { nc: 0, amt: 0 },
+      };
+      map.set(key, row);
+    }
+
+    const day = Number(e.date.slice(8, 10));
+    const nc = e.totalCases;
+    const amt = e.totalAmount;
+    const bucket = day <= 10 ? row.slot1 : day <= 20 ? row.slot2 : row.slot3;
+    bucket.nc += nc;
+    bucket.amt += amt;
+    row.monthly.nc += nc;
+    row.monthly.amt += amt;
+  }
+
+  return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function combinedGrandTotal(rows: CombinedStaffRow[]) {
+  return rows.reduce(
+    (acc, r) => ({
+      s1nc: acc.s1nc + r.slot1.nc, s1amt: acc.s1amt + r.slot1.amt,
+      s2nc: acc.s2nc + r.slot2.nc, s2amt: acc.s2amt + r.slot2.amt,
+      s3nc: acc.s3nc + r.slot3.nc, s3amt: acc.s3amt + r.slot3.amt,
+      mnc: acc.mnc + r.monthly.nc, mamt: acc.mamt + r.monthly.amt,
+    }),
+    { s1nc: 0, s1amt: 0, s2nc: 0, s2amt: 0, s3nc: 0, s3amt: 0, mnc: 0, mamt: 0 },
+  );
+}
+
+function exportCombinedSlotStatement(
+  entries: Entry[],
+  allUsers: { id: string; name: string; base: string }[],
+  month: string,
+) {
+  const rows = buildCombinedRows(entries, allUsers, month);
+
+  if (rows.length === 0) {
+    toast.error("No submitted entries found for this month");
+    return;
+  }
+
+  const header = [
+    "Sl No", "Base", "Name of Staff",
+    "1-10 NC", "1-10 AMT",
+    "11-20 NC", "11-20 AMT",
+    "21-31 NC", "21-31 AMT",
+    "Monthly NC", "Monthly AMT",
+  ];
+
+  const dataRows = rows.map((r, i) => [
+    i + 1, r.base, r.name,
+    r.slot1.nc, Number(r.slot1.amt.toFixed(0)),
+    r.slot2.nc, Number(r.slot2.amt.toFixed(0)),
+    r.slot3.nc, Number(r.slot3.amt.toFixed(0)),
+    r.monthly.nc, Number(r.monthly.amt.toFixed(0)),
+  ]);
+
+  const grandTotal = combinedGrandTotal(rows);
+
+  const totalRow = [
+    "", "", "GRAND TOTAL",
+    grandTotal.s1nc, Number(grandTotal.s1amt.toFixed(0)),
+    grandTotal.s2nc, Number(grandTotal.s2amt.toFixed(0)),
+    grandTotal.s3nc, Number(grandTotal.s3amt.toFixed(0)),
+    grandTotal.mnc, Number(grandTotal.mamt.toFixed(0)),
+  ];
+
+  const sheetData = [header, ...dataRows, totalRow];
+  const ws = XLSX.utils.aoa_to_sheet(sheetData);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Combined Statement");
+  const monthLabelStr = new Date(`${month}-01`).toLocaleDateString("en-IN", {
+    month: "long",
+    year: "numeric",
+  });
+  const filename = `Combined_Statement_${monthLabelStr.replace(/\s+/g, "_")}.xlsx`;
+  XLSX.writeFile(wb, filename);
+  toast.success(`Exported combined statement for ${rows.length} staff`);
+}
+
+function printCombinedStatement(
+  entries: Entry[],
+  allUsers: { id: string; name: string; base: string }[],
+  month: string,
+) {
+  const rows = buildCombinedRows(entries, allUsers, month);
+
+  if (rows.length === 0) {
+    toast.error("No submitted entries found for this month");
+    return;
+  }
+
+  const grandTotal = combinedGrandTotal(rows);
+  const monthLabelStr = new Date(`${month}-01`).toLocaleDateString("en-IN", {
+    month: "long",
+    year: "numeric",
+  });
+
+  const bodyRows = rows
+    .map(
+      (r, i) => `
+        <tr>
+          <td>${i + 1}</td>
+          <td>${r.base}</td>
+          <td style="text-align:left">${r.name}</td>
+          <td>${r.slot1.nc}</td><td>${r.slot1.amt.toFixed(0)}</td>
+          <td>${r.slot2.nc}</td><td>${r.slot2.amt.toFixed(0)}</td>
+          <td>${r.slot3.nc}</td><td>${r.slot3.amt.toFixed(0)}</td>
+          <td>${r.monthly.nc}</td><td>${r.monthly.amt.toFixed(0)}</td>
+        </tr>`,
+    )
+    .join("");
+
+  const html = `
+    <html>
+      <head>
+        <title>Combined Statement — ${monthLabelStr}</title>
+        <style>
+          body { font-family: Arial, sans-serif; padding: 24px; }
+          h1 { font-size: 18px; margin-bottom: 4px; }
+          p { font-size: 12px; color: #555; margin-top: 0; margin-bottom: 16px; }
+          table { border-collapse: collapse; width: 100%; font-size: 12px; }
+          th, td { border: 1px solid #999; padding: 6px 8px; text-align: center; }
+          th { background: #f0f0f0; }
+          tfoot td { font-weight: bold; background: #f5f5f5; }
+        </style>
+      </head>
+      <body>
+        <h1>Combined 10-Day + Monthly Statement</h1>
+        <p>${monthLabelStr}</p>
+        <table>
+          <thead>
+            <tr>
+              <th rowspan="2">Sl No</th>
+              <th rowspan="2">Base</th>
+              <th rowspan="2">Name of Staff</th>
+              <th colspan="2">1 – 10</th>
+              <th colspan="2">11 – 20</th>
+              <th colspan="2">21 – 31</th>
+              <th colspan="2">Monthly</th>
+            </tr>
+            <tr>
+              <th>NC</th><th>AMT</th>
+              <th>NC</th><th>AMT</th>
+              <th>NC</th><th>AMT</th>
+              <th>NC</th><th>AMT</th>
+            </tr>
+          </thead>
+          <tbody>${bodyRows}</tbody>
+          <tfoot>
+            <tr>
+              <td colspan="3">GRAND TOTAL</td>
+              <td>${grandTotal.s1nc}</td><td>${grandTotal.s1amt.toFixed(0)}</td>
+              <td>${grandTotal.s2nc}</td><td>${grandTotal.s2amt.toFixed(0)}</td>
+              <td>${grandTotal.s3nc}</td><td>${grandTotal.s3amt.toFixed(0)}</td>
+              <td>${grandTotal.mnc}</td><td>${grandTotal.mamt.toFixed(0)}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </body>
+    </html>
+  `;
+
+  const printWindow = window.open("", "_blank");
+  if (!printWindow) {
+    toast.error("Pop-up blocked — please allow pop-ups to print");
+    return;
+  }
+  printWindow.document.write(html);
+  printWindow.document.close();
+  printWindow.focus();
+  printWindow.print();
+}
+
 function AdminSheetPage() {
   const { data: fetchedRows = [], isLoading } = useQuery({
     queryKey: ["admin", "sheetRows"],
@@ -270,7 +473,9 @@ function AdminSheetPage() {
     queryFn: fetchAllUsers,
   });
 
-  const [rows, setRows] = useState<SheetRow[]>([]);
+ const [rows, setRows] = useState<SheetRow[]>([]);
+  const [combinedMonth, setCombinedMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [showCombinedModal, setShowCombinedModal] = useState(false);
   const initialized = useRef(false);
   const lastSyncSignature = useRef<string>("");
   const saveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
@@ -461,8 +666,14 @@ useEffect(() => {
           </p>
         </div>
 
-        {/* Buttons — fixed to the viewport, immune to any horizontal/vertical scroll */}
-        <div className="fixed right-4 top-20 z-50 hidden gap-2 md:right-8 md:flex">
+       {/* Buttons — fixed to the viewport, immune to any horizontal/vertical scroll */}
+        <div className="fixed right-4 top-20 z-50 hidden flex-wrap items-center gap-2 md:right-8 md:flex">
+          <button
+            onClick={() => setShowCombinedModal(true)}
+            className="inline-flex items-center gap-1.5 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground shadow-elevated"
+          >
+            <Download className="h-4 w-4" /> Combined Statement
+          </button>
           <button
             onClick={handleAddRow}
             className="inline-flex items-center gap-1.5 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-semibold shadow-elevated hover:bg-muted"
@@ -471,7 +682,7 @@ useEffect(() => {
           </button>
           <button
             onClick={() => exportSheetToExcel(rows)}
-            className="inline-flex items-center gap-1.5 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground shadow-elevated"
+            className="inline-flex items-center gap-1.5 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-semibold shadow-elevated hover:bg-muted"
           >
             <Download className="h-4 w-4" /> Export Excel
           </button>
@@ -504,6 +715,14 @@ useEffect(() => {
             className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-semibold hover:bg-muted"
           >
             <Download className="h-4 w-4" /> Staff Summary
+          </button>
+        </div>
+        <div className="mb-4 md:hidden">
+          <button
+            onClick={() => setShowCombinedModal(true)}
+            className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground"
+          >
+            <Download className="h-4 w-4" /> Combined Statement
           </button>
         </div>
 
@@ -744,6 +963,50 @@ useEffect(() => {
           </div>
         )}
       </div>
+
+      {showCombinedModal && (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-foreground/40 p-4"
+          onClick={(e) => { if (e.target === e.currentTarget) setShowCombinedModal(false); }}
+        >
+          <div className="w-full max-w-sm rounded-2xl bg-card p-6 shadow-elevated">
+            <div className="mb-5 flex items-center justify-between">
+              <h2 className="text-lg font-bold">Combined Statement</h2>
+              <button
+                onClick={() => setShowCombinedModal(false)}
+                className="grid h-8 w-8 place-items-center rounded-full hover:bg-muted"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Select Month
+            </div>
+            <input
+              type="month"
+              value={combinedMonth}
+              onChange={(e) => setCombinedMonth(e.target.value)}
+              className="w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm outline-none"
+            />
+
+            <div className="mt-5 flex gap-2">
+              <button
+                onClick={() => printCombinedStatement(allEntries, allUsers, combinedMonth)}
+                className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-border py-2.5 text-sm font-semibold hover:bg-muted"
+              >
+                <Printer className="h-4 w-4" /> Print
+              </button>
+              <button
+                onClick={() => exportCombinedSlotStatement(allEntries, allUsers, combinedMonth)}
+                className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-primary py-2.5 text-sm font-semibold text-primary-foreground"
+              >
+                <Download className="h-4 w-4" /> Export
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </AdminLayout>
   );
 }
