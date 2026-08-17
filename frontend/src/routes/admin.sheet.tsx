@@ -146,12 +146,13 @@ function exportSheetToExcel(rows: SheetRow[]) {
 
 // ── Staff-wise + Month-wise summary aggregation ──────────────────────────
 interface CatTotal { nc: number; amt: number; }
+interface FareCatTotal extends CatTotal { fare: number; eFare: number; }
 interface StaffAgg {
   base: string;
   name: string;
   month?: string; // "YYYY-MM", only set for monthly aggregates
   wd: number;
-  A: CatTotal; B: CatTotal; C: CatTotal; D: CatTotal; E: CatTotal;
+  A: FareCatTotal; B: FareCatTotal; C: CatTotal; D: CatTotal; E: CatTotal;
   smoking: CatTotal; litteringCases: CatTotal;
 }
 
@@ -165,7 +166,7 @@ function aggregateSheetRows(rows: SheetRow[], includeMonth: boolean): StaffAgg[]
     if (!agg) {
       agg = {
         base: row.base, name: row.name, month: includeMonth ? month : undefined, wd: 0,
-        A: { nc: 0, amt: 0 }, B: { nc: 0, amt: 0 }, C: { nc: 0, amt: 0 },
+        A: { nc: 0, amt: 0, fare: 0, eFare: 0 }, B: { nc: 0, amt: 0, fare: 0, eFare: 0 }, C: { nc: 0, amt: 0 },
         D: { nc: 0, amt: 0 }, E: { nc: 0, amt: 0 }, smoking: { nc: 0, amt: 0 },
         litteringCases: { nc: 0, amt: 0 },
       };
@@ -173,7 +174,11 @@ function aggregateSheetRows(rows: SheetRow[], includeMonth: boolean): StaffAgg[]
     }
     agg.wd += row.wd || 0;
     agg.A.nc += row.A.nc || 0; agg.A.amt += fareTotal(row.A);
+    agg.A.fare += (row.A.nc || 0) * (row.A.fare || 0);
+    agg.A.eFare += (row.A.nc || 0) * (row.A.eFare || 0);
     agg.B.nc += row.B.nc || 0; agg.B.amt += fareTotal(row.B);
+    agg.B.fare += (row.B.nc || 0) * (row.B.fare || 0);
+    agg.B.eFare += (row.B.nc || 0) * (row.B.eFare || 0);
     agg.C.nc += row.C.nc || 0; agg.C.amt += row.C.amt || 0;
     agg.D.nc += row.D.nc || 0; agg.D.amt += row.D.amt || 0;
     agg.E.nc += row.E.nc || 0; agg.E.amt += row.E.amt || 0;
@@ -195,10 +200,10 @@ function monthLabel(ym: string): string {
 function aggToSheetData(aggs: StaffAgg[], includeMonth: boolean): (string | number)[][] {
   const header: (string | number)[] = ["Sl No", "Base", "Name of Staff"];
   if (includeMonth) header.push("Month");
-  header.push(
+ header.push(
     "WD",
-    "A NC", "A AMT",
-    "B NC", "B AMT",
+    "A NC", "A Fare", "A E-Fare", "A AMT",
+    "B NC", "B Fare", "B E-Fare", "B AMT",
     "C NC", "C AMT",
     "D NC", "D AMT",
     "E NC", "E AMT",
@@ -217,8 +222,8 @@ function aggToSheetData(aggs: StaffAgg[], includeMonth: boolean): (string | numb
     if (includeMonth) row.push(monthLabel(a.month || "—"));
     row.push(
       a.wd,
-      a.A.nc, Number(a.A.amt.toFixed(0)),
-      a.B.nc, Number(a.B.amt.toFixed(0)),
+      a.A.nc, Number(a.A.fare.toFixed(0)), Number(a.A.eFare.toFixed(0)), Number(a.A.amt.toFixed(0)),
+      a.B.nc, Number(a.B.fare.toFixed(0)), Number(a.B.eFare.toFixed(0)), Number(a.B.amt.toFixed(0)),
       a.C.nc, Number(a.C.amt.toFixed(0)),
       a.D.nc, Number(a.D.amt.toFixed(0)),
       a.E.nc, Number(a.E.amt.toFixed(0)),
@@ -229,7 +234,6 @@ function aggToSheetData(aggs: StaffAgg[], includeMonth: boolean): (string | numb
     );
     return row;
   });
-
   return [header, ...dataRows];
 }
 
@@ -256,7 +260,14 @@ function exportStaffSummaryToExcel(rows: SheetRow[]) {
 }
 
 // ── Combined 10-day slot + Monthly statement — one row per staff ──────────
-interface SlotTotal { nc: number; amt: number; }
+interface SlotTotal {
+  nc: number;
+  amt: number;
+  aFare: number;
+  aEFare: number;
+  bFare: number;
+  bEFare: number;
+}
 interface CombinedStaffRow {
   base: string;
   name: string;
@@ -265,6 +276,20 @@ interface CombinedStaffRow {
   slot3: SlotTotal;
   monthly: SlotTotal;
 }
+
+function emptySlotTotal(): SlotTotal {
+  return { nc: 0, amt: 0, aFare: 0, aEFare: 0, bFare: 0, bEFare: 0 };
+}
+
+function addToSlot(target: SlotTotal, delta: SlotTotal) {
+  target.nc += delta.nc;
+  target.amt += delta.amt;
+  target.aFare += delta.aFare;
+  target.aEFare += delta.aEFare;
+  target.bFare += delta.bFare;
+  target.bEFare += delta.bEFare;
+}
+
 function buildCombinedRows(entries: Entry[], allUsers: { id: string; name: string; base: string }[], month: string) {
   const monthEntries = entries.filter(
     (e) => e.status === "submitted" && e.date.slice(0, 7) === month,
@@ -280,37 +305,55 @@ function buildCombinedRows(entries: Entry[], allUsers: { id: string; name: strin
       row = {
         base: user?.base ?? e.collectorBase ?? "",
         name: user?.name ?? e.collectorName ?? "",
-        slot1: { nc: 0, amt: 0 },
-        slot2: { nc: 0, amt: 0 },
-        slot3: { nc: 0, amt: 0 },
-        monthly: { nc: 0, amt: 0 },
+        slot1: emptySlotTotal(),
+        slot2: emptySlotTotal(),
+        slot3: emptySlotTotal(),
+        monthly: emptySlotTotal(),
       };
       map.set(key, row);
     }
 
     const day = Number(e.date.slice(8, 10));
-    const nc = e.totalCases;
-    const amt = e.totalAmount;
+    const delta: SlotTotal = {
+      nc: e.totalCases,
+      amt: e.totalAmount,
+      aFare: e.A?.caseAmt ?? 0,
+      aEFare: (e.A?.penaltyAmt ?? 0) + (e.A?.gstAmt ?? 0),
+      bFare: e.B?.caseAmt ?? 0,
+      bEFare: (e.B?.penaltyAmt ?? 0) + (e.B?.gstAmt ?? 0),
+    };
+
     const bucket = day <= 10 ? row.slot1 : day <= 20 ? row.slot2 : row.slot3;
-    bucket.nc += nc;
-    bucket.amt += amt;
-    row.monthly.nc += nc;
-    row.monthly.amt += amt;
+    addToSlot(bucket, delta);
+    addToSlot(row.monthly, delta);
   }
 
   return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function combinedGrandTotal(rows: CombinedStaffRow[]) {
+  const empty = () => emptySlotTotal();
   return rows.reduce(
-    (acc, r) => ({
-      s1nc: acc.s1nc + r.slot1.nc, s1amt: acc.s1amt + r.slot1.amt,
-      s2nc: acc.s2nc + r.slot2.nc, s2amt: acc.s2amt + r.slot2.amt,
-      s3nc: acc.s3nc + r.slot3.nc, s3amt: acc.s3amt + r.slot3.amt,
-      mnc: acc.mnc + r.monthly.nc, mamt: acc.mamt + r.monthly.amt,
-    }),
-    { s1nc: 0, s1amt: 0, s2nc: 0, s2amt: 0, s3nc: 0, s3amt: 0, mnc: 0, mamt: 0 },
+    (acc, r) => {
+      addToSlot(acc.slot1, r.slot1);
+      addToSlot(acc.slot2, r.slot2);
+      addToSlot(acc.slot3, r.slot3);
+      addToSlot(acc.monthly, r.monthly);
+      return acc;
+    },
+    { slot1: empty(), slot2: empty(), slot3: empty(), monthly: empty() },
   );
+}
+
+function slotColumns(s: SlotTotal): (string | number)[] {
+  return [
+    s.nc,
+    Number(s.amt.toFixed(0)),
+    Number(s.aFare.toFixed(0)),
+    Number(s.aEFare.toFixed(0)),
+    Number(s.bFare.toFixed(0)),
+    Number(s.bEFare.toFixed(0)),
+  ];
 }
 
 function exportCombinedSlotStatement(
@@ -325,30 +368,34 @@ function exportCombinedSlotStatement(
     return;
   }
 
+  const slotHeaderGroup = (label: string) => [
+    `${label} NC`, `${label} AMT`, `${label} A Fare`, `${label} A E-Fare`, `${label} B Fare`, `${label} B E-Fare`,
+  ];
+
   const header = [
     "Sl No", "Base", "Name of Staff",
-    "1-10 NC", "1-10 AMT",
-    "11-20 NC", "11-20 AMT",
-    "21-31 NC", "21-31 AMT",
-    "Monthly NC", "Monthly AMT",
+    ...slotHeaderGroup("1-10"),
+    ...slotHeaderGroup("11-20"),
+    ...slotHeaderGroup("21-31"),
+    ...slotHeaderGroup("Monthly"),
   ];
 
   const dataRows = rows.map((r, i) => [
     i + 1, r.base, r.name,
-    r.slot1.nc, Number(r.slot1.amt.toFixed(0)),
-    r.slot2.nc, Number(r.slot2.amt.toFixed(0)),
-    r.slot3.nc, Number(r.slot3.amt.toFixed(0)),
-    r.monthly.nc, Number(r.monthly.amt.toFixed(0)),
+    ...slotColumns(r.slot1),
+    ...slotColumns(r.slot2),
+    ...slotColumns(r.slot3),
+    ...slotColumns(r.monthly),
   ]);
 
   const grandTotal = combinedGrandTotal(rows);
 
   const totalRow = [
     "", "", "GRAND TOTAL",
-    grandTotal.s1nc, Number(grandTotal.s1amt.toFixed(0)),
-    grandTotal.s2nc, Number(grandTotal.s2amt.toFixed(0)),
-    grandTotal.s3nc, Number(grandTotal.s3amt.toFixed(0)),
-    grandTotal.mnc, Number(grandTotal.mamt.toFixed(0)),
+    ...slotColumns(grandTotal.slot1),
+    ...slotColumns(grandTotal.slot2),
+    ...slotColumns(grandTotal.slot3),
+    ...slotColumns(grandTotal.monthly),
   ];
 
   const sheetData = [header, ...dataRows, totalRow];
@@ -382,6 +429,9 @@ function printCombinedStatement(
     year: "numeric",
   });
 
+  const slotCells = (s: SlotTotal) =>
+    `<td>${s.nc}</td><td>${s.amt.toFixed(0)}</td><td>${s.aFare.toFixed(0)}</td><td>${s.aEFare.toFixed(0)}</td><td>${s.bFare.toFixed(0)}</td><td>${s.bEFare.toFixed(0)}</td>`;
+
   const bodyRows = rows
     .map(
       (r, i) => `
@@ -389,13 +439,17 @@ function printCombinedStatement(
           <td>${i + 1}</td>
           <td>${r.base}</td>
           <td style="text-align:left">${r.name}</td>
-          <td>${r.slot1.nc}</td><td>${r.slot1.amt.toFixed(0)}</td>
-          <td>${r.slot2.nc}</td><td>${r.slot2.amt.toFixed(0)}</td>
-          <td>${r.slot3.nc}</td><td>${r.slot3.amt.toFixed(0)}</td>
-          <td>${r.monthly.nc}</td><td>${r.monthly.amt.toFixed(0)}</td>
+          ${slotCells(r.slot1)}
+          ${slotCells(r.slot2)}
+          ${slotCells(r.slot3)}
+          ${slotCells(r.monthly)}
         </tr>`,
     )
     .join("");
+
+  const slotHeaderCells = `
+    <th>NC</th><th>AMT</th><th>A Fare</th><th>A E-Fare</th><th>B Fare</th><th>B E-Fare</th>
+  `;
 
   const html = `
     <html>
@@ -405,8 +459,8 @@ function printCombinedStatement(
           body { font-family: Arial, sans-serif; padding: 24px; }
           h1 { font-size: 18px; margin-bottom: 4px; }
           p { font-size: 12px; color: #555; margin-top: 0; margin-bottom: 16px; }
-          table { border-collapse: collapse; width: 100%; font-size: 12px; }
-          th, td { border: 1px solid #999; padding: 6px 8px; text-align: center; }
+          table { border-collapse: collapse; width: 100%; font-size: 11px; }
+          th, td { border: 1px solid #999; padding: 5px 6px; text-align: center; }
           th { background: #f0f0f0; }
           tfoot td { font-weight: bold; background: #f5f5f5; }
         </style>
@@ -420,26 +474,26 @@ function printCombinedStatement(
               <th rowspan="2">Sl No</th>
               <th rowspan="2">Base</th>
               <th rowspan="2">Name of Staff</th>
-              <th colspan="2">1 – 10</th>
-              <th colspan="2">11 – 20</th>
-              <th colspan="2">21 – 31</th>
-              <th colspan="2">Monthly</th>
+              <th colspan="6">1 – 10</th>
+              <th colspan="6">11 – 20</th>
+              <th colspan="6">21 – 31</th>
+              <th colspan="6">Monthly</th>
             </tr>
             <tr>
-              <th>NC</th><th>AMT</th>
-              <th>NC</th><th>AMT</th>
-              <th>NC</th><th>AMT</th>
-              <th>NC</th><th>AMT</th>
+              ${slotHeaderCells}
+              ${slotHeaderCells}
+              ${slotHeaderCells}
+              ${slotHeaderCells}
             </tr>
           </thead>
           <tbody>${bodyRows}</tbody>
           <tfoot>
             <tr>
               <td colspan="3">GRAND TOTAL</td>
-              <td>${grandTotal.s1nc}</td><td>${grandTotal.s1amt.toFixed(0)}</td>
-              <td>${grandTotal.s2nc}</td><td>${grandTotal.s2amt.toFixed(0)}</td>
-              <td>${grandTotal.s3nc}</td><td>${grandTotal.s3amt.toFixed(0)}</td>
-              <td>${grandTotal.mnc}</td><td>${grandTotal.mamt.toFixed(0)}</td>
+              ${slotCells(grandTotal.slot1)}
+              ${slotCells(grandTotal.slot2)}
+              ${slotCells(grandTotal.slot3)}
+              ${slotCells(grandTotal.monthly)}
             </tr>
           </tfoot>
         </table>
