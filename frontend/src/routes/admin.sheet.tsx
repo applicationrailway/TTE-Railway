@@ -18,6 +18,7 @@ import { useEffect, useRef, useState } from "react";
 import { Plus, Trash2, Download, Loader2, X, Printer } from "lucide-react";
 import { toast } from "sonner";
 import * as XLSX from "xlsx";
+import ExcelJS from "exceljs";
 
 export const Route = createFileRoute("/admin/sheet")({
   head: () => ({ meta: [{ title: "Sheet · Admin" }] }),
@@ -39,7 +40,11 @@ function fareTotal(val: FareCaseValue | undefined): number {
   if (!val) return 0;
   return (val.nc || 0) * ((val.fare || 0) + (val.eFare || 0));
 }
-
+function abSubtotal(row: SheetRow) {
+  const nc = (row.A?.nc || 0) + (row.B?.nc || 0);
+  const amt = fareTotal(row.A) + fareTotal(row.B);
+  return { nc, amt };
+}
 function abcSubtotal(row: SheetRow) {
   const nc = (row.A?.nc || 0) + (row.B?.nc || 0) + (row.C?.nc || 0);
   const amt = fareTotal(row.A) + fareTotal(row.B) + (row.C?.amt || 0);
@@ -55,95 +60,355 @@ function grandTotals(row: SheetRow) {
   return { nc, amt, avgNc, avgAmt };
 }
 
-function exportSheetToExcel(rows: SheetRow[]) {
+// Report-specific total: matches the printed PDF format (AB+C+D+Littering+Smoking),
+// deliberately excludes E Case since the PDF layout doesn't show it, and has no average.
+function reportGrandTotal(row: SheetRow) {
+  const ab = abSubtotal(row);
+  const nc = ab.nc + (row.C?.nc || 0) + (row.D?.nc || 0) + (row.smoking?.nc || 0) + (row.litteringCases?.nc || 0);
+  const amt = ab.amt + (row.C?.amt || 0) + (row.D?.amt || 0) + (row.smoking?.amt || 0) + (row.litteringCases?.amt || 0);
+  return { nc, amt };
+}
+
+// ── Colored PDF-style export/print — matches "Ten Days Ticket Checking
+// Performance" layout with section-colored headers. The community `xlsx`
+// package can't write cell colors into real .xlsx, so we build a styled
+// HTML table and (a) save it with an .xls extension — Excel opens HTML
+// content and keeps the colors — and (b) reuse the same HTML to print.
+// Light/pastel palette — used for the Combined Statement (10-day + monthly)
+const SLOT_COLORS_LIGHT = {
+  slot1: "#dbeafe",   // 1-10 — light blue
+  slot2: "#dcfce7",   // 11-20 — light green
+  slot3: "#fef3c7",   // 21-31 — light amber
+  monthly: "#ede9fe", // Monthly — light purple
+  total: "#e5e7eb",   // Grand Total — light gray
+};
+
+// Monochromatic blue theme — matches dashboard primary color, darkest for
+// Grand Total, progressively lighter/fading blue moving left to right.
+const SECTION_COLORS = {
+  a: "#172554",         // A Cases — darkest navy blue
+  b: "#1e3a8a",         // B Cases — dark blue
+  ab: "#1d4ed8",        // A+B subtotal — blue
+  c: "#2563eb",         // C Cases — medium blue
+  abc: "#3b82f6",       // A+B+C subtotal — medium-light blue
+  d: "#60a5fa",         // D Cases — light blue
+  littering: "#1e40af", // Littering — dark blue (repeats for visual anchor)
+  smoking: "#2563eb",   // Smoking — medium blue
+  total: "#0c1a3d",     // Grand Total — deepest navy, stands out most
+};
+
+function buildSheetHtml(
+  rows: SheetRow[],
+  titleOverride?: { title: string; subtitle: string; div?: string },
+): string {
+  const th = (text: string, color: string, colspan = 1, rowspan = 1) =>
+    `<th colspan="${colspan}" rowspan="${rowspan}" style="background:${color};color:#fff;border:1px solid #999;padding:5px 6px;">${text}</th>`;
+  const thPlain = (text: string, rowspan = 1) =>
+    `<th rowspan="${rowspan}" style="background:#e5e7eb;color:#111;border:1px solid #999;padding:5px 6px;">${text}</th>`;
+  const subTh = (text: string, color: string) =>
+    `<th style="background:${color}22;color:#111;border:1px solid #999;padding:4px 6px;font-weight:600;">${text}</th>`;
+
+  const headerRow1 = `
+    <tr>
+      ${thPlain("Sl No", 2)}
+      ${thPlain("", 2)}
+      ${thPlain("Name of Staff", 2)}
+      ${thPlain("", 2)}
+      ${thPlain("W/D", 2)}
+      ${th("A Cases", SECTION_COLORS.a, 4)}
+      ${th("B Cases", SECTION_COLORS.b, 4)}
+      ${th("A+B", SECTION_COLORS.ab, 2)}
+      ${th("C Cases", SECTION_COLORS.c, 2)}
+      ${th("A+B+C", SECTION_COLORS.abc, 2)}
+      ${th("D Cases", SECTION_COLORS.d, 2)}
+      ${th("Littering", SECTION_COLORS.littering, 2)}
+      ${th("Smoking", SECTION_COLORS.smoking, 2)}
+      ${th("Grand Total", SECTION_COLORS.total, 2)}
+    </tr>`;
+
+  const headerRow2 = `
+    <tr>
+      ${subTh("NC", SECTION_COLORS.a)}${subTh("F", SECTION_COLORS.a)}${subTh("EF", SECTION_COLORS.a)}${subTh("T", SECTION_COLORS.a)}
+      ${subTh("NC", SECTION_COLORS.b)}${subTh("F", SECTION_COLORS.b)}${subTh("EF", SECTION_COLORS.b)}${subTh("T", SECTION_COLORS.b)}
+      ${subTh("NC", SECTION_COLORS.ab)}${subTh("AMT", SECTION_COLORS.ab)}
+      ${subTh("NC", SECTION_COLORS.c)}${subTh("AMT", SECTION_COLORS.c)}
+      ${subTh("NC", SECTION_COLORS.abc)}${subTh("AMT", SECTION_COLORS.abc)}
+      ${subTh("NC", SECTION_COLORS.d)}${subTh("AMT", SECTION_COLORS.d)}
+      ${subTh("NC", SECTION_COLORS.littering)}${subTh("AMT", SECTION_COLORS.littering)}
+      ${subTh("NC", SECTION_COLORS.smoking)}${subTh("AMT", SECTION_COLORS.smoking)}
+      ${subTh("NC", SECTION_COLORS.total)}${subTh("AMT", SECTION_COLORS.total)}
+    </tr>`;
+
+  const td = (val: string | number, bold = false) =>
+    `<td style="border:1px solid #ccc;padding:4px 6px;text-align:center;${bold ? "font-weight:700;" : ""}">${val}</td>`;
+
+  const bodyRows = rows
+    .map((r, i) => {
+      const ab = abSubtotal(r);
+      const abc = abcSubtotal(r);
+      const t = reportGrandTotal(r);
+      return `
+        <tr>
+          ${td(i + 1)}
+          ${td("NGP")}
+          <td style="border:1px solid #ccc;padding:4px 6px;text-align:left;">${r.name}</td>
+          ${td(r.base)}
+          ${td(r.wd)}
+          ${td(r.A.nc)}${td(r.A.fare)}${td(r.A.eFare)}${td(fareTotal(r.A).toFixed(0), true)}
+          ${td(r.B.nc)}${td(r.B.fare)}${td(r.B.eFare)}${td(fareTotal(r.B).toFixed(0), true)}
+          ${td(ab.nc, true)}${td(ab.amt.toFixed(0), true)}
+          ${td(r.C.nc)}${td(r.C.amt)}
+          ${td(abc.nc, true)}${td(abc.amt.toFixed(0), true)}
+          ${td(r.D.nc)}${td(r.D.amt)}
+          ${td(r.litteringCases.nc)}${td(r.litteringCases.amt)}
+          ${td(r.smoking.nc)}${td(r.smoking.amt)}
+          ${td(t.nc, true)}${td(t.amt.toFixed(0), true)}
+        </tr>`;
+    })
+    .join("");
+
+  const grand = rows.reduce(
+    (acc, r) => {
+      const t = reportGrandTotal(r);
+      return { nc: acc.nc + t.nc, amt: acc.amt + t.amt };
+    },
+    { nc: 0, amt: 0 },
+  );
+
+  return `
+    <html>
+      <head>
+        <meta charset="UTF-8" />
+        <title>TTE Earning Sheet</title>
+        <style>
+          * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; color-adjust: exact !important; }
+          body { font-family: Arial, sans-serif; padding: 20px; }
+          .header-row { display: flex; align-items: center; justify-content: space-between; }
+          .header-spacer { width: 140px; }
+          .header-div { width: 140px; text-align: right; font-size: 13px; font-weight: bold; }
+          h1 { flex: 1; font-size: 16px; margin: 0; text-align: center; }
+          h2 { font-size: 13px; margin: 2px 0 14px; text-align: center; color: #444; font-weight: normal; }
+          table { border-collapse: collapse; width: 100%; font-size: 11px; }
+          @media print {
+            @page { size: landscape; margin: 10mm; }
+          }
+        </style>
+      </head>
+      <body>
+        <div class="header-row">
+          <div class="header-spacer"></div>
+          <h1>${titleOverride ? titleOverride.title : "SOUTH EAST CENTRAL RAILWAY — NAGPUR DIVISION"}</h1>
+          <div class="header-div">${titleOverride?.div ?? ""}</div>
+        </div>
+        <h2>${titleOverride ? titleOverride.subtitle : `TICKET CHECKING PERFORMANCE SHEET · Generated ${new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}`}</h2>
+        <table>
+          <thead>${headerRow1}${headerRow2}</thead>
+          <tbody>${bodyRows}</tbody>
+          <tfoot>
+            <tr>
+              <td colspan="25" style="border:1px solid #ccc;padding:6px;text-align:right;font-weight:700;background:#f3f4f6;">GRAND TOTAL</td>
+              <td style="border:1px solid #ccc;padding:6px;text-align:center;font-weight:700;background:#f3f4f6;">${grand.nc}</td>
+              <td style="border:1px solid #ccc;padding:6px;text-align:center;font-weight:700;background:#f3f4f6;">${grand.amt.toFixed(0)}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </body>
+    </html>`;
+}
+
+// Hex color (e.g. "#1e40af") -> ARGB string ExcelJS needs (e.g. "FF1E40AF")
+function toArgb(hex: string): string {
+  return "FF" + hex.replace("#", "").toUpperCase();
+}
+
+async function exportSheetToExcel(
+  rows: SheetRow[],
+  titleOverride?: { title: string; subtitle: string; filename: string; div?: string },
+) {
   if (rows.length === 0) {
     toast.error("No rows to export");
     return;
   }
 
-  const header1: (string | number)[] = ["Sl No", "Base", "Name of Staff", "WD"];
-  const header2: (string | number)[] = ["", "", "", ""];
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("TTE Earning Sheet");
+  const thinBorder = {
+    top: { style: "thin" as const },
+    left: { style: "thin" as const },
+    bottom: { style: "thin" as const },
+    right: { style: "thin" as const },
+  };
 
-  header1.push("A Cases", "", "", "");
-  header2.push("NC", "Fare", "E/Fare", "Total");
+  const colCount = 27;
+  for (let c = 1; c <= colCount; c++) {
+    ws.getColumn(c).width = c === 3 ? 22 : 10;
+  }
 
-  header1.push("B Cases", "", "", "");
-  header2.push("NC", "E/Fare", "Fare", "Total");
+  const divText = titleOverride?.div ?? "";
+  const divColSpan = divText ? Math.max(3, Math.round(colCount * 0.12)) : 0;
 
-  header1.push("C Cases", "", "");
-  header2.push("NC", "AMT", "Total");
+  if (divText) {
+    ws.mergeCells(1, 1, 1, colCount - divColSpan);
+    const railwayCell = ws.getCell(1, 1);
+    railwayCell.value = titleOverride!.title;
+    railwayCell.font = { bold: true, size: 14 };
+    railwayCell.alignment = { horizontal: "center" };
 
-  header1.push("A+B+C", "");
-  header2.push("NC", "AMT");
+    ws.mergeCells(1, colCount - divColSpan + 1, 1, colCount);
+    const divCell = ws.getCell(1, colCount - divColSpan + 1);
+    divCell.value = divText;
+    divCell.font = { bold: true, size: 11 };
+    divCell.alignment = { horizontal: "right" };
+  } else {
+    ws.mergeCells(1, 1, 1, colCount);
+    ws.getCell(1, 1).value = titleOverride ? titleOverride.title : "SOUTH EAST CENTRAL RAILWAY — NAGPUR DIVISION";
+    ws.getCell(1, 1).font = { bold: true, size: 14 };
+    ws.getCell(1, 1).alignment = { horizontal: "center" };
+  }
 
-  header1.push("Average", "");
-  header2.push("NC", "AMT");
+  ws.mergeCells(2, 1, 2, colCount);
+  ws.getCell(2, 1).value = titleOverride
+    ? titleOverride.subtitle
+    : `TICKET CHECKING PERFORMANCE SHEET · Generated ${new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}`;
+  ws.getCell(2, 1).font = { italic: true, size: 10, color: { argb: "FF555555" } };
+  ws.getCell(2, 1).alignment = { horizontal: "center" };
 
-  header1.push("D Cases", "");
-  header2.push("NC", "AMT");
+  const headerRowIdx = 4;
+  const subHeaderRowIdx = 5;
 
-  header1.push("E Case", "");
-  header2.push("NC", "AMT");
+  interface Group { label: string; color: string; subLabels: string[]; }
+  const groups: Group[] = [
+    { label: "A Cases", color: SECTION_COLORS.a, subLabels: ["NC", "F", "EF", "T"] },
+    { label: "B Cases", color: SECTION_COLORS.b, subLabels: ["NC", "F", "EF", "T"] },
+    { label: "A+B", color: SECTION_COLORS.ab, subLabels: ["NC", "AMT"] },
+    { label: "C Cases", color: SECTION_COLORS.c, subLabels: ["NC", "AMT"] },
+    { label: "A+B+C", color: SECTION_COLORS.abc, subLabels: ["NC", "AMT"] },
+    { label: "D Cases", color: SECTION_COLORS.d, subLabels: ["NC", "AMT"] },
+    { label: "Littering", color: SECTION_COLORS.littering, subLabels: ["NC", "AMT"] },
+    { label: "Smoking", color: SECTION_COLORS.smoking, subLabels: ["NC", "AMT"] },
+    { label: "G/Total", color: SECTION_COLORS.total, subLabels: ["NC", "AMT"] },
+  ];
 
-  header1.push("Smoking", "");
-  header2.push("NC", "AMT");
-
-  header1.push("Littering", "");
-  header2.push("NC", "AMT");
-
-  header1.push("Total", "", "Average", "");
-  header2.push("NC", "AMT", "NC", "AMT");
-
-  const dataRows = rows.map((r, i) => {
-    const abc = abcSubtotal(r);
-    const abcAvgNc = r.wd > 0 ? abc.nc / r.wd : 0;
-    const abcAvgAmt = r.wd > 0 ? abc.amt / r.wd : 0;
-    const t = grandTotals(r);
-
-    return [
-      i + 1, r.base, r.name, r.wd,
-      r.A.nc, r.A.fare, r.A.eFare, Number(fareTotal(r.A).toFixed(0)),
-      r.B.nc, r.B.eFare, r.B.fare, Number(fareTotal(r.B).toFixed(0)),
-      r.C.nc, r.C.amt, r.C.amt,
-      abc.nc, Number(abc.amt.toFixed(0)),
-      Number(abcAvgNc.toFixed(1)), Number(abcAvgAmt.toFixed(1)),
-      r.D.nc, r.D.amt,
-      r.E.nc, r.E.amt,
-      r.smoking.nc, r.smoking.amt,
-      r.litteringCases.nc, r.litteringCases.amt,
-      t.nc, Number(t.amt.toFixed(0)), Number(t.avgNc.toFixed(1)), Number(t.avgAmt.toFixed(1)),
-    ];
+  const fixedCols = ["Sl No", "NGP", "Name of Staff", "", "W/D"];
+  fixedCols.forEach((label, idx) => {
+    const col = idx + 1;
+    ws.mergeCells(headerRowIdx, col, subHeaderRowIdx, col);
+    const cell = ws.getCell(headerRowIdx, col);
+    cell.value = label;
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE5E7EB" } };
+    cell.font = { bold: true };
+    cell.alignment = { horizontal: "center", vertical: "middle" };
+    cell.border = thinBorder;
+    ws.getCell(subHeaderRowIdx, col).border = thinBorder;
   });
 
-  const sheetData = [header1, header2, ...dataRows];
-  const ws = XLSX.utils.aoa_to_sheet(sheetData);
+  let col = fixedCols.length + 1;
+  for (const g of groups) {
+    const startCol = col;
+    const endCol = col + g.subLabels.length - 1;
+    ws.mergeCells(headerRowIdx, startCol, headerRowIdx, endCol);
+    const groupCell = ws.getCell(headerRowIdx, startCol);
+    groupCell.value = g.label;
+    groupCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: toArgb(g.color) } };
+    groupCell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+    groupCell.alignment = { horizontal: "center", vertical: "middle" };
+    for (let c = startCol; c <= endCol; c++) ws.getCell(headerRowIdx, c).border = thinBorder;
 
-  const merges: XLSX.Range[] = [
-    { s: { r: 0, c: 0 }, e: { r: 1, c: 0 } },
-    { s: { r: 0, c: 1 }, e: { r: 1, c: 1 } },
-    { s: { r: 0, c: 2 }, e: { r: 1, c: 2 } },
-    { s: { r: 0, c: 3 }, e: { r: 1, c: 3 } },
-    { s: { r: 0, c: 4 }, e: { r: 0, c: 7 } },   // A Cases
-    { s: { r: 0, c: 8 }, e: { r: 0, c: 11 } },  // B Cases
-    { s: { r: 0, c: 12 }, e: { r: 0, c: 14 } }, // C Cases
-    { s: { r: 0, c: 15 }, e: { r: 0, c: 16 } }, // A+B+C
-    { s: { r: 0, c: 17 }, e: { r: 0, c: 18 } }, // Average (A+B+C)
-    { s: { r: 0, c: 19 }, e: { r: 0, c: 20 } }, // D Cases
-    { s: { r: 0, c: 21 }, e: { r: 0, c: 22 } }, // E Case
-    { s: { r: 0, c: 23 }, e: { r: 0, c: 24 } }, // Smoking
-    { s: { r: 0, c: 25 }, e: { r: 0, c: 26 } }, // Littering
-    { s: { r: 0, c: 27 }, e: { r: 0, c: 28 } }, // Total
-    { s: { r: 0, c: 29 }, e: { r: 0, c: 30 } }, // Average (grand)
-  ];
-  ws["!merges"] = merges;
+    g.subLabels.forEach((sub, i) => {
+      const cell = ws.getCell(subHeaderRowIdx, startCol + i);
+      cell.value = sub;
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: toArgb(g.color) } };
+      cell.font = { bold: true, size: 10 };
+      cell.alignment = { horizontal: "center" };
+      cell.border = thinBorder;
+    });
 
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "TTE Earning Sheet");
-  const filename = `TTE_Earning_Sheet_${new Date().toISOString().slice(0, 10)}.xlsx`;
-  XLSX.writeFile(wb, filename);
-  toast.success(`Exported ${rows.length} rows to ${filename}`);
+    col = endCol + 1;
+  }
+
+  let r = subHeaderRowIdx + 1;
+  rows.forEach((row, i) => {
+    const ab = abSubtotal(row);
+    const abc = abcSubtotal(row);
+    const t = reportGrandTotal(row);
+
+    const values = [
+      i + 1, "NGP", row.name, row.base, row.wd,
+      row.A.nc, row.A.fare, row.A.eFare, Number(fareTotal(row.A).toFixed(0)),
+      row.B.nc, row.B.fare, row.B.eFare, Number(fareTotal(row.B).toFixed(0)),
+      ab.nc, Number(ab.amt.toFixed(0)),
+      row.C.nc, row.C.amt,
+      abc.nc, Number(abc.amt.toFixed(0)),
+      row.D.nc, row.D.amt,
+      row.litteringCases.nc, row.litteringCases.amt,
+      row.smoking.nc, row.smoking.amt,
+      t.nc, Number(t.amt.toFixed(0)),
+    ];
+
+    values.forEach((val, ci) => {
+      const cell = ws.getCell(r, ci + 1);
+      cell.value = val;
+      cell.border = thinBorder;
+      cell.alignment = { horizontal: ci === 2 ? "left" : "center" };
+    });
+    r++;
+  });
+
+  const grand = rows.reduce(
+    (acc, row) => {
+      const t = reportGrandTotal(row);
+      return { nc: acc.nc + t.nc, amt: acc.amt + t.amt };
+    },
+    { nc: 0, amt: 0 },
+  );
+  ws.mergeCells(r, 1, r, colCount - 2);
+  const gtLabelCell = ws.getCell(r, 1);
+  gtLabelCell.value = "GRAND TOTAL";
+  gtLabelCell.font = { bold: true };
+  gtLabelCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF3F4F6" } };
+  gtLabelCell.alignment = { horizontal: "right" };
+  gtLabelCell.border = thinBorder;
+  ws.getCell(r, colCount - 1).value = grand.nc;
+  ws.getCell(r, colCount).value = Number(grand.amt.toFixed(0));
+  [colCount - 1, colCount].forEach((c) => {
+    const cell = ws.getCell(r, c);
+    cell.font = { bold: true };
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF3F4F6" } };
+    cell.alignment = { horizontal: "center" };
+    cell.border = thinBorder;
+  });
+
+  const buffer = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: "application/octet-stream" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = titleOverride ? titleOverride.filename : `TTE_Earning_Sheet_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  toast.success(`Exported ${rows.length} rows`);
 }
-
+function printSheetStatement(
+  rows: SheetRow[],
+  titleOverride?: { title: string; subtitle: string; div?: string },
+) {
+  if (rows.length === 0) {
+    toast.error("No rows to print");
+    return;
+  }
+  const html = buildSheetHtml(rows, titleOverride);
+  const printWindow = window.open("", "_blank");
+  if (!printWindow) {
+    toast.error("Pop-up blocked — please allow pop-ups to print");
+    return;
+  }
+  printWindow.document.write(html);
+  printWindow.document.close();
+  printWindow.focus();
+  printWindow.print();
+}
 // ── Staff-wise + Month-wise summary aggregation ──────────────────────────
 interface CatTotal { nc: number; amt: number; }
 interface FareCatTotal extends CatTotal { fare: number; eFare: number; }
@@ -356,7 +621,7 @@ function slotColumns(s: SlotTotal): (string | number)[] {
   ];
 }
 
-function exportCombinedSlotStatement(
+async function exportCombinedSlotStatement(
   entries: Entry[],
   allUsers: { id: string; name: string; base: string }[],
   month: string,
@@ -368,46 +633,129 @@ function exportCombinedSlotStatement(
     return;
   }
 
-  const slotHeaderGroup = (label: string) => [
-    `${label} NC`, `${label} AMT`, `${label} A Fare`, `${label} A E-Fare`, `${label} B Fare`, `${label} B E-Fare`,
-  ];
+  const monthLabelStr = new Date(`${month}-01`).toLocaleDateString("en-IN", {
+    month: "long",
+    year: "numeric",
+  });
 
-  const header = [
-    "Sl No", "Base", "Name of Staff",
-    ...slotHeaderGroup("1-10"),
-    ...slotHeaderGroup("11-20"),
-    ...slotHeaderGroup("21-31"),
-    ...slotHeaderGroup("Monthly"),
-  ];
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("Combined Statement");
 
-  const dataRows = rows.map((r, i) => [
-    i + 1, r.base, r.name,
-    ...slotColumns(r.slot1),
-    ...slotColumns(r.slot2),
-    ...slotColumns(r.slot3),
-    ...slotColumns(r.monthly),
-  ]);
+  const thinBorder = {
+    top: { style: "thin" as const },
+    left: { style: "thin" as const },
+    bottom: { style: "thin" as const },
+    right: { style: "thin" as const },
+  };
+
+  const colCount = 3 + 6 * 4; // Sl No, Base, Name + 4 slots × 6 sub-columns
+  for (let c = 1; c <= colCount; c++) {
+    ws.getColumn(c).width = c === 3 ? 22 : 10;
+  }
+
+  ws.mergeCells(1, 1, 1, colCount);
+  ws.getCell(1, 1).value = "COMBINED 10-DAY + MONTHLY STATEMENT";
+  ws.getCell(1, 1).font = { bold: true, size: 14 };
+  ws.getCell(1, 1).alignment = { horizontal: "center" };
+
+  ws.mergeCells(2, 1, 2, colCount);
+  ws.getCell(2, 1).value = monthLabelStr;
+  ws.getCell(2, 1).font = { italic: true, size: 10, color: { argb: "FF555555" } };
+  ws.getCell(2, 1).alignment = { horizontal: "center" };
+
+  const headerRowIdx = 4;
+  const subHeaderRowIdx = 5;
+
+  const fixedCols = ["Sl No", "Base", "Name of Staff"];
+  fixedCols.forEach((label, idx) => {
+    const col = idx + 1;
+    ws.mergeCells(headerRowIdx, col, subHeaderRowIdx, col);
+    const cell = ws.getCell(headerRowIdx, col);
+    cell.value = label;
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF3F4F6" } };
+    cell.font = { bold: true };
+    cell.alignment = { horizontal: "center", vertical: "middle" };
+    cell.border = thinBorder;
+    ws.getCell(subHeaderRowIdx, col).border = thinBorder;
+  });
+
+  const slotGroups: { label: string; color: string }[] = [
+    { label: "1 – 10", color: SLOT_COLORS_LIGHT.slot1 },
+    { label: "11 – 20", color: SLOT_COLORS_LIGHT.slot2 },
+    { label: "21 – 31", color: SLOT_COLORS_LIGHT.slot3 },
+    { label: "Monthly", color: SLOT_COLORS_LIGHT.monthly },
+  ];
+  const subLabels = ["NC", "AMT", "A Fare", "A E-Fare", "B Fare", "B E-Fare"];
+
+  let col = fixedCols.length + 1;
+  for (const g of slotGroups) {
+    const startCol = col;
+    const endCol = col + subLabels.length - 1;
+    ws.mergeCells(headerRowIdx, startCol, headerRowIdx, endCol);
+    const groupCell = ws.getCell(headerRowIdx, startCol);
+    groupCell.value = g.label;
+    groupCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: toArgb(g.color) } };
+    groupCell.font = { bold: true, color: { argb: "FF1F2937" } };
+    groupCell.alignment = { horizontal: "center", vertical: "middle" };
+    for (let c = startCol; c <= endCol; c++) ws.getCell(headerRowIdx, c).border = thinBorder;
+
+    subLabels.forEach((sub, i) => {
+      const cell = ws.getCell(subHeaderRowIdx, startCol + i);
+      cell.value = sub;
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: toArgb(g.color) } };
+      cell.font = { bold: true, size: 10, color: { argb: "FF1F2937" } };
+      cell.alignment = { horizontal: "center" };
+      cell.border = thinBorder;
+    });
+
+    col = endCol + 1;
+  }
+
+  let r = subHeaderRowIdx + 1;
+  rows.forEach((row, i) => {
+    const values = [
+      i + 1, row.base, row.name,
+      ...slotColumns(row.slot1),
+      ...slotColumns(row.slot2),
+      ...slotColumns(row.slot3),
+      ...slotColumns(row.monthly),
+    ];
+    values.forEach((val, ci) => {
+      const cell = ws.getCell(r, ci + 1);
+      cell.value = val;
+      cell.border = thinBorder;
+      cell.alignment = { horizontal: ci === 2 ? "left" : "center" };
+    });
+    r++;
+  });
 
   const grandTotal = combinedGrandTotal(rows);
-
-  const totalRow = [
+  const totalValues = [
     "", "", "GRAND TOTAL",
     ...slotColumns(grandTotal.slot1),
     ...slotColumns(grandTotal.slot2),
     ...slotColumns(grandTotal.slot3),
     ...slotColumns(grandTotal.monthly),
   ];
-
-  const sheetData = [header, ...dataRows, totalRow];
-  const ws = XLSX.utils.aoa_to_sheet(sheetData);
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "Combined Statement");
-  const monthLabelStr = new Date(`${month}-01`).toLocaleDateString("en-IN", {
-    month: "long",
-    year: "numeric",
+  totalValues.forEach((val, ci) => {
+    const cell = ws.getCell(r, ci + 1);
+    cell.value = val;
+    cell.font = { bold: true };
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: toArgb(SLOT_COLORS_LIGHT.total) } };
+    cell.alignment = { horizontal: ci === 2 ? "right" : "center" };
+    cell.border = thinBorder;
   });
-  const filename = `Combined_Statement_${monthLabelStr.replace(/\s+/g, "_")}.xlsx`;
-  XLSX.writeFile(wb, filename);
+
+  const buffer = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: "application/octet-stream" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `Combined_Statement_${monthLabelStr.replace(/\s+/g, "_")}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
   toast.success(`Exported combined statement for ${rows.length} staff`);
 }
 
@@ -451,18 +799,25 @@ function printCombinedStatement(
     <th>NC</th><th>AMT</th><th>A Fare</th><th>A E-Fare</th><th>B Fare</th><th>B E-Fare</th>
   `;
 
-  const html = `
+    const html = `
     <html>
       <head>
         <title>Combined Statement — ${monthLabelStr}</title>
         <style>
+          * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; color-adjust: exact !important; }
           body { font-family: Arial, sans-serif; padding: 24px; }
           h1 { font-size: 18px; margin-bottom: 4px; }
           p { font-size: 12px; color: #555; margin-top: 0; margin-bottom: 16px; }
           table { border-collapse: collapse; width: 100%; font-size: 11px; }
           th, td { border: 1px solid #999; padding: 5px 6px; text-align: center; }
-          th { background: #f0f0f0; }
-          tfoot td { font-weight: bold; background: #f5f5f5; }
+          .slot1 { background: ${SLOT_COLORS_LIGHT.slot1}; }
+          .slot2 { background: ${SLOT_COLORS_LIGHT.slot2}; }
+          .slot3 { background: ${SLOT_COLORS_LIGHT.slot3}; }
+          .slotm { background: ${SLOT_COLORS_LIGHT.monthly}; }
+          tfoot td { font-weight: bold; background: ${SLOT_COLORS_LIGHT.total}; }
+          @media print {
+            @page { size: landscape; margin: 10mm; }
+          }
         </style>
       </head>
       <body>
@@ -474,16 +829,13 @@ function printCombinedStatement(
               <th rowspan="2">Sl No</th>
               <th rowspan="2">Base</th>
               <th rowspan="2">Name of Staff</th>
-              <th colspan="6">1 – 10</th>
-              <th colspan="6">11 – 20</th>
-              <th colspan="6">21 – 31</th>
-              <th colspan="6">Monthly</th>
+              <th colspan="6" class="slot1">1 – 10</th>
+              <th colspan="6" class="slot2">11 – 20</th>
+              <th colspan="6" class="slot3">21 – 31</th>
+              <th colspan="6" class="slotm">Monthly</th>
             </tr>
             <tr>
-              ${slotHeaderCells}
-              ${slotHeaderCells}
-              ${slotHeaderCells}
-              ${slotHeaderCells}
+              ${["slot1", "slot2", "slot3", "slotm"].map((cls) => `<th class="${cls}">NC</th><th class="${cls}">AMT</th><th class="${cls}">A Fare</th><th class="${cls}">A E-Fare</th><th class="${cls}">B Fare</th><th class="${cls}">B E-Fare</th>`).join("")}
             </tr>
           </thead>
           <tbody>${bodyRows}</tbody>
@@ -512,6 +864,148 @@ function printCombinedStatement(
   printWindow.print();
 }
 
+// ── Build full-category (A/B/C/D/E/Smoking/Littering) staff rows for a
+// given period (1-10 / 1-20 / 1-31) directly from submitted entries ──────
+function buildPeriodStaffRows(
+  entries: Entry[],
+  allUsers: { id: string; name: string; base: string }[],
+  month: string,
+  minDay: number,
+  maxDay: number,
+): SheetRow[] {
+  const filtered = entries.filter((e) => {
+    if (e.status !== "submitted" || e.date.slice(0, 7) !== month) return false;
+    const day = Number(e.date.slice(8, 10));
+    return day >= minDay && day <= maxDay;
+  });
+
+  interface Accum {
+    base: string;
+    name: string;
+    dates: Set<string>;
+    aNc: number; aFareSum: number; aEFareSum: number;
+    bNc: number; bFareSum: number; bEFareSum: number;
+    C: CaseValue; D: CaseValue; E: CaseValue; smoking: CaseValue; litteringCases: CaseValue;
+  }
+
+  const map = new Map<string, Accum>();
+
+  for (const e of filtered) {
+    const user = allUsers.find((u) => u.id === e.collectorId);
+    const key = e.collectorId || e.collectorName || "unknown";
+    let acc = map.get(key);
+    if (!acc) {
+      acc = {
+        base: user?.base ?? e.collectorBase ?? "",
+        name: user?.name ?? e.collectorName ?? "",
+        dates: new Set(),
+        aNc: 0, aFareSum: 0, aEFareSum: 0,
+        bNc: 0, bFareSum: 0, bEFareSum: 0,
+        C: { nc: 0, amt: 0 }, D: { nc: 0, amt: 0 }, E: { nc: 0, amt: 0 },
+        smoking: { nc: 0, amt: 0 }, litteringCases: { nc: 0, amt: 0 },
+      };
+      map.set(key, acc);
+    }
+    acc.dates.add(e.date);
+    acc.aNc += e.A?.cases ?? 0;
+    acc.aFareSum += e.A?.caseAmt ?? 0;
+    acc.aEFareSum += (e.A?.penaltyAmt ?? 0) + (e.A?.gstAmt ?? 0);
+    acc.bNc += e.B?.cases ?? 0;
+    acc.bFareSum += e.B?.caseAmt ?? 0;
+    acc.bEFareSum += (e.B?.penaltyAmt ?? 0) + (e.B?.gstAmt ?? 0);
+    acc.C.nc += e.C?.cases ?? 0; acc.C.amt += e.C?.amount ?? 0;
+    acc.D.nc += e.D?.cases ?? 0; acc.D.amt += e.D?.amount ?? 0;
+    acc.E.nc += e.E?.cases ?? 0; acc.E.amt += e.E?.amount ?? 0;
+    acc.smoking.nc += e.smoking?.cases ?? 0; acc.smoking.amt += e.smoking?.amount ?? 0;
+    acc.litteringCases.nc += e.litteringCases?.cases ?? 0; acc.litteringCases.amt += e.litteringCases?.amount ?? 0;
+  }
+
+  return Array.from(map.entries())
+    .map(([key, acc], idx) => ({
+      id: `period-${key}-${idx}`,
+      order: idx + 1,
+      base: acc.base,
+      name: acc.name,
+      wd: acc.dates.size,
+      A: { nc: acc.aNc, fare: acc.aNc > 0 ? acc.aFareSum / acc.aNc : 0, eFare: acc.aNc > 0 ? acc.aEFareSum / acc.aNc : 0 },
+      B: { nc: acc.bNc, fare: acc.bNc > 0 ? acc.bFareSum / acc.bNc : 0, eFare: acc.bNc > 0 ? acc.bEFareSum / acc.bNc : 0 },
+      C: acc.C, D: acc.D, E: acc.E, smoking: acc.smoking, litteringCases: acc.litteringCases,
+      sacking: { nc: 0, amt: 0 },
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function periodDateRange(month: string, minDay: number, maxDay: number): { from: string; to: string } {
+  const [y, m] = month.split("-").map(Number);
+  const lastDayOfMonth = new Date(y, m, 0).getDate();
+  const clampedMax = Math.min(maxDay, lastDayOfMonth);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const from = `${pad(minDay)}.${pad(m)}.${y}`;
+  const to = `${pad(clampedMax)}.${pad(m)}.${y}`;
+  return { from, to };
+}
+
+function periodReportName(minDay: number, maxDay: number): string {
+  const span = maxDay - minDay + 1;
+  if (span >= 28) return "MONTHLY";
+  if (span >= 20) return "TWENTY DAYS";
+  return "TEN DAYS";
+}
+
+function periodExport(
+  entries: Entry[],
+  allUsers: { id: string; name: string; base: string }[],
+  month: string,
+  minDay: number,
+  maxDay: number,
+  label: string,
+) {
+  const rows = buildPeriodStaffRows(entries, allUsers, month, minDay, maxDay);
+  if (rows.length === 0) {
+    toast.error(`No submitted entries found for this ${label} period`);
+    return;
+  }
+  const { from, to } = periodDateRange(month, minDay, maxDay);
+  const reportName = periodReportName(minDay, maxDay);
+  const monthLabelStr = new Date(`${month}-01`).toLocaleDateString("en-IN", { month: "long", year: "numeric" });
+  void exportSheetToExcel(rows, {
+    title: "SOUTH EAST CENTRAL RAILWAY",
+    subtitle: `${reportName} TICKET CHECKING PERFORMANCE FOR P.E.:- ${from} to ${to}`,
+    div: "DIV:- NAGPUR",
+    filename: `${label.replace(/\s+/g, "_")}_Statement_${monthLabelStr.replace(/\s+/g, "_")}.xlsx`,
+  });
+}
+
+function periodPrint(
+  entries: Entry[],
+  allUsers: { id: string; name: string; base: string }[],
+  month: string,
+  minDay: number,
+  maxDay: number,
+  label: string,
+) {
+  const rows = buildPeriodStaffRows(entries, allUsers, month, minDay, maxDay);
+  if (rows.length === 0) {
+    toast.error(`No submitted entries found for this ${label} period`);
+    return;
+  }
+  const { from, to } = periodDateRange(month, minDay, maxDay);
+  const reportName = periodReportName(minDay, maxDay);
+  printSheetStatement(rows, {
+    title: "SOUTH EAST CENTRAL RAILWAY",
+    subtitle: `${reportName} TICKET CHECKING PERFORMANCE FOR P.E.:- ${from} to ${to}`,
+    div: "DIV:- NAGPUR",
+  });
+}
+
+const PERIOD_OPTIONS = [
+  { value: "1-10", label: "Day 1 – 10", minDay: 1, maxDay: 10 },
+  { value: "11-20", label: "Day 11 – 20", minDay: 11, maxDay: 20 },
+  { value: "21-31", label: "Day 21 – 31", minDay: 21, maxDay: 31 },
+  { value: "1-20", label: "Day 1 – 20 (Cumulative)", minDay: 1, maxDay: 20 },
+  
+] as const;
+
 function AdminSheetPage() {
   const { data: fetchedRows = [], isLoading } = useQuery({
     queryKey: ["admin", "sheetRows"],
@@ -528,8 +1022,10 @@ function AdminSheetPage() {
   });
 
  const [rows, setRows] = useState<SheetRow[]>([]);
-  const [combinedMonth, setCombinedMonth] = useState(() => new Date().toISOString().slice(0, 7));
+    const [combinedMonth, setCombinedMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [selectedPeriod, setSelectedPeriod] = useState<string>("1-10");
   const [showCombinedModal, setShowCombinedModal] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
   const initialized = useRef(false);
   const lastSyncSignature = useRef<string>("");
   const saveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
@@ -734,8 +1230,8 @@ useEffect(() => {
           >
             <Plus className="h-4 w-4" /> Add Row
           </button>
-          <button
-            onClick={() => exportSheetToExcel(rows)}
+              <button
+            onClick={() => setShowExportModal(true)}
             className="inline-flex items-center gap-1.5 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-semibold shadow-elevated hover:bg-muted"
           >
             <Download className="h-4 w-4" /> Export Excel
@@ -756,8 +1252,8 @@ useEffect(() => {
           >
             <Plus className="h-4 w-4" /> Add Row
           </button>
-          <button
-            onClick={() => exportSheetToExcel(rows)}
+                        <button
+            onClick={() => setShowExportModal(true)}
             className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground shadow-card"
           >
             <Download className="h-4 w-4" /> Export Excel
@@ -1018,7 +1514,7 @@ useEffect(() => {
         )}
       </div>
 
-      {showCombinedModal && (
+           {showCombinedModal && (
         <div
           className="fixed inset-0 z-50 grid place-items-center bg-foreground/40 p-4"
           onClick={(e) => { if (e.target === e.currentTarget) setShowCombinedModal(false); }}
@@ -1034,8 +1530,8 @@ useEffect(() => {
               </button>
             </div>
 
-            <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-              Select Month
+                        <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Monthly Statement — Select Month
             </div>
             <input
               type="month"
@@ -1044,7 +1540,7 @@ useEffect(() => {
               className="w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm outline-none"
             />
 
-            <div className="mt-5 flex gap-2">
+                        <div className="mt-5 flex gap-2">
               <button
                 onClick={() => printCombinedStatement(allEntries, allUsers, combinedMonth)}
                 className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-border py-2.5 text-sm font-semibold hover:bg-muted"
@@ -1052,10 +1548,86 @@ useEffect(() => {
                 <Printer className="h-4 w-4" /> Print
               </button>
               <button
-                onClick={() => exportCombinedSlotStatement(allEntries, allUsers, combinedMonth)}
+                onClick={() => { void exportCombinedSlotStatement(allEntries, allUsers, combinedMonth); }}
                 className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-primary py-2.5 text-sm font-semibold text-primary-foreground"
               >
                 <Download className="h-4 w-4" /> Export
+              </button>
+            </div>
+
+                        <div className="mt-5 space-y-3 border-t border-border pt-4">
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                Full Category Statement (A/B/C/D/E/Smoking/Littering)
+              </div>
+
+              <select
+                value={selectedPeriod}
+                onChange={(e) => setSelectedPeriod(e.target.value)}
+                className="w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm outline-none"
+              >
+                {PERIOD_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+
+              <div className="flex gap-2">
+                {(() => {
+                  const opt = PERIOD_OPTIONS.find((o) => o.value === selectedPeriod)!;
+                  return (
+                    <>
+                      <button
+                        onClick={() => periodPrint(allEntries, allUsers, combinedMonth, opt.minDay, opt.maxDay, opt.label)}
+                        className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-border py-2.5 text-sm font-semibold hover:bg-muted"
+                      >
+                        <Printer className="h-4 w-4" /> Print
+                      </button>
+                      <button
+                        onClick={() => periodExport(allEntries, allUsers, combinedMonth, opt.minDay, opt.maxDay, opt.label)}
+                        className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-primary py-2.5 text-sm font-semibold text-primary-foreground"
+                      >
+                        <Download className="h-4 w-4" /> Excel
+                      </button>
+                    </>
+                  );
+                })()}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showExportModal && (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-foreground/40 p-4"
+          onClick={(e) => { if (e.target === e.currentTarget) setShowExportModal(false); }}
+        >
+          <div className="w-full max-w-sm rounded-2xl bg-card p-6 shadow-elevated">
+            <div className="mb-5 flex items-center justify-between">
+              <h2 className="text-lg font-bold">Export Sheet</h2>
+              <button
+                onClick={() => setShowExportModal(false)}
+                className="grid h-8 w-8 place-items-center rounded-full hover:bg-muted"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <p className="mb-5 text-sm text-muted-foreground">
+              Export all {rows.length} rows as a colored statement.
+            </p>
+
+            <div className="flex gap-2">
+              <button
+                onClick={() => printSheetStatement(rows)}
+                className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-border py-2.5 text-sm font-semibold hover:bg-muted"
+              >
+                <Printer className="h-4 w-4" /> Print
+              </button>
+              <button
+                onClick={() => exportSheetToExcel(rows)}
+                className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-primary py-2.5 text-sm font-semibold text-primary-foreground"
+              >
+                <Download className="h-4 w-4" /> Excel
               </button>
             </div>
           </div>
