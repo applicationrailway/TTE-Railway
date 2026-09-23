@@ -45,9 +45,12 @@ function computeUsername(name: string): string {
   return name.replace(/[^A-Za-z]/g, "").slice(0, 4).toUpperCase();
 }
 
-// Last 4 characters of PF No. (as typed) — e.g. "39500722678" -> "2678"
+// Last 6 characters of PF No. (as typed) — e.g. "39500722678" -> "722678"
 function computePassword(pfNo: string): string {
-  return pfNo.trim().slice(-4).toUpperCase();
+  const clean = pfNo.trim();
+  const last6 = clean.slice(-6).toUpperCase();
+  // Safety net: agar PF No. 6 se chhota hai, to padding add karo
+  return last6.length >= 6 ? last6 : last6.padEnd(6, "0");
 }
 
 function AdminUsersPage() {
