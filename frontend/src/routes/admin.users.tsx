@@ -45,13 +45,13 @@ function computeUsername(name: string): string {
   return name.replace(/[^A-Za-z]/g, "").slice(0, 4).toUpperCase();
 }
 
-// Last 6 characters of PF No. (as typed) — e.g. "39500722678" -> "722678"
-function computePassword(pfNo: string): string {
-  const clean = pfNo.trim();
-  const last6 = clean.slice(-6).toUpperCase();
-  // Safety net: agar PF No. 6 se chhota hai, to padding add karo
-  return last6.length >= 6 ? last6 : last6.padEnd(6, "0");
-}
+// // Last 6 characters of PF No. (as typed) — e.g. "39500722678" -> "722678"
+// function computePassword(pfNo: string): string {
+//   const clean = pfNo.trim();
+//   const last6 = clean.slice(-6).toUpperCase();
+//   // Safety net: agar PF No. 6 se chhota hai, to padding add karo
+//   return last6.length >= 6 ? last6 : last6.padEnd(6, "0");
+// }
 
 function AdminUsersPage() {
   const queryClient = useQueryClient();
@@ -112,17 +112,15 @@ function AdminUsersPage() {
     setForm((f) => ({ ...f, [k]: v }));
   }
 
-  // Auto-derive username/password whenever Name or PF No. change — admin can
-  // still hand-edit the username field afterwards if there's a clash.
+    // Username set once when the modal opens; admin can freely edit after that.
   useEffect(() => {
     if (!showAdd) return;
-    setForm((f) => ({
-      ...f,
-      username: computeUsername(f.name),
-      password: computePassword(f.pfNo),
-    }));
+    setForm((f) => {
+      const username = f.username || computeUsername(f.name);
+      return { ...f, username, password: username };
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [form.name, form.pfNo, showAdd]);
+  }, [showAdd]);
 
   const usernameClash = users.some(
     (u) => u.username && u.username.toUpperCase() === form.username.trim().toUpperCase(),
@@ -133,8 +131,12 @@ function AdminUsersPage() {
       toast.error("Name, Username, Password and PF No. are required");
       return;
     }
-    if (usernameClash) {
+        if (usernameClash) {
       toast.error("Username already taken — please edit it before creating");
+      return;
+    }
+    if (form.username.trim().length < 6) {
+      toast.error("Username must be at least 6 characters (this is also used as password)");
       return;
     }
     setCreating(true);
@@ -360,22 +362,31 @@ function AdminUsersPage() {
                 <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                   Login Credentials (auto-generated — share with staff)
                 </div>
-                <div className="grid grid-cols-2 gap-3">
+                                <div className="grid grid-cols-2 gap-3">
                   <FormField label="Username *">
                     <input
                       value={form.username}
-                      onChange={(e) => setField("username", e.target.value.toUpperCase())}
+                      onChange={(e) => {
+                        const val = e.target.value.replace(/\s/g, "");
+                        setForm((f) => ({ ...f, username: val, password: val }));
+                      }}
+                      placeholder="e.g. yash3034"
                       className="field-input font-mono"
                     />
                   </FormField>
                   <FormField label="Password *">
                     <input
                       value={form.password}
-                      onChange={(e) => setField("password", e.target.value)}
-                      className="field-input font-mono"
+                      readOnly
+                      className="field-input font-mono bg-muted/60 cursor-not-allowed"
                     />
                   </FormField>
                 </div>
+                {form.username.length > 0 && form.username.length < 6 && (
+                  <p className="mt-1 text-[11px] font-semibold text-destructive">
+                    Username must be at least 6 characters — this is also used as the password.
+                  </p>
+                )}
                 {usernameClash && (
                   <div className="mt-2 flex items-center gap-1.5 text-xs font-semibold text-destructive">
                     <AlertTriangle className="h-3.5 w-3.5" /> This username is already taken — please edit it.
