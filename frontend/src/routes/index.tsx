@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { Eye, EyeOff, Train, Lock, Mail, ShieldCheck } from "lucide-react";
+import { Eye, EyeOff, Train, Lock, User as UserIcon, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 import { signIn } from "@/services/auth";
 import { useAuth } from "@/services/AuthContext";
@@ -28,8 +28,8 @@ function emptyFine(): FineCategory { return { cases: 0, amount: 0 }; }
 function LoginPage() {
   const navigate = useNavigate();
   const { user, profile, loading: authLoading } = useAuth();
-  const [email, setEmail] = useState("collector@railway.gov.in");
-  const [password, setPassword] = useState("collector123");
+    const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [show, setShow] = useState(false);
   const [remember, setRemember] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -71,10 +71,16 @@ function LoginPage() {
     e.preventDefault();
     setLoading(true);
     try {
-      await signIn(email, password);
+      // Admin accounts still sign in with a real email (contains "@").
+      // TC/TTE staff sign in with just their Username — convert it to the
+      // hidden internal login-id Firebase Auth actually stores.
+      const loginId = username.includes("@")
+        ? username.trim()
+        : `${username.trim().toLowerCase()}@tte.internal`;
+      await signIn(loginId, password);
       toast.success("Signed in successfully");
     } catch (error) {
-      toast.error("Invalid credentials. Try collector@railway.gov.in or admin@railway.gov.in");
+      toast.error("Invalid username or password");
     } finally {
       setLoading(false);
     }
@@ -134,18 +140,19 @@ function LoginPage() {
           onSubmit={submit}
           className="rounded-2xl border border-border bg-card p-6 shadow-card"
         >
-          <label className="mb-3 block">
+                    <label className="mb-3 block">
             <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              Email
+              Username
             </span>
             <div className="flex items-center gap-2 rounded-xl border border-input bg-background px-3 py-2.5 focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/30">
-              <Mail className="h-4 w-4 text-muted-foreground" />
+              <UserIcon className="h-4 w-4 text-muted-foreground" />
               <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
                 className="flex-1 bg-transparent text-sm outline-none"
-                placeholder="you@railway.gov.in"
+                placeholder="e.g. YASH"
+                autoCapitalize="characters"
                 required
               />
             </div>

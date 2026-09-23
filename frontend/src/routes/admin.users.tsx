@@ -6,14 +6,16 @@ import {
   updateUserProfile,
   createTCUser,
   deleteUser,
+  DESIGNATIONS,
   type CreateUserPayload,
   type UpdateUserPayload,
   type User,
+  type Designation,
 } from "@/services/users";
 import { AdminLayout } from "@/components/AdminLayout";
-import { Eye, Pencil, Ban, CheckCircle2, Plus, X, Loader2, Save, Search, Table2, Trash2 } from "lucide-react";
+import { Eye, Pencil, Ban, CheckCircle2, Plus, X, Loader2, Save, Search, Table2, Trash2, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 export const Route = createFileRoute("/admin/users")({
   head: () => ({ meta: [{ title: "Manage Users · Admin" }] }),
@@ -26,14 +28,26 @@ function emptyForm(): CreateUserPayload {
   return {
     name: "",
     email: "",
+    username: "",
     password: "",
     pfNo: "",
     mobile: "",
     base: "NGP",
     division: "NGP",
     tteLobbyId: "",
+    designation: "TTE",
     role: "tc",
   };
+}
+
+// First 4 letters of name (letters only, uppercase) — e.g. "Yash Rinku Nikose" -> "YASH"
+function computeUsername(name: string): string {
+  return name.replace(/[^A-Za-z]/g, "").slice(0, 4).toUpperCase();
+}
+
+// Last 4 characters of PF No. (as typed) — e.g. "39500722678" -> "2678"
+function computePassword(pfNo: string): string {
+  return pfNo.trim().slice(-4).toUpperCase();
 }
 
 function AdminUsersPage() {
@@ -91,29 +105,49 @@ function AdminUsersPage() {
     }
   }
 
-  function setField<K extends keyof CreateUserPayload>(k: K, v: CreateUserPayload[K]) {
+    function setField<K extends keyof CreateUserPayload>(k: K, v: CreateUserPayload[K]) {
     setForm((f) => ({ ...f, [k]: v }));
   }
 
+  // Auto-derive username/password whenever Name or PF No. change — admin can
+  // still hand-edit the username field afterwards if there's a clash.
+  useEffect(() => {
+    if (!showAdd) return;
+    setForm((f) => ({
+      ...f,
+      username: computeUsername(f.name),
+      password: computePassword(f.pfNo),
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.name, form.pfNo, showAdd]);
+
+  const usernameClash = users.some(
+    (u) => u.username && u.username.toUpperCase() === form.username.trim().toUpperCase(),
+  );
+
   async function handleCreate() {
-    if (!form.name.trim() || !form.email.trim() || !form.password.trim() || !form.pfNo.trim()) {
-      toast.error("Name, Email, Password and PF No. are required");
+    if (!form.name.trim() || !form.username.trim() || !form.password.trim() || !form.pfNo.trim()) {
+      toast.error("Name, Username, Password and PF No. are required");
       return;
     }
-    if (form.password.length < 6) {
-      toast.error("Password must be at least 6 characters");
+    if (usernameClash) {
+      toast.error("Username already taken — please edit it before creating");
       return;
     }
     setCreating(true);
     try {
-      await createTCUser(form);
-      toast.success(`TC account created for ${form.name}`);
+      const payload: CreateUserPayload = {
+        ...form,
+        email: `${form.username.trim().toLowerCase()}@tte.internal`,
+      };
+      await createTCUser(payload);
+      toast.success(`Account created — Username: ${form.username} / Password: ${form.password}`);
       setShowAdd(false);
       setForm(emptyForm());
       queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Failed to create user";
-      toast.error(msg.includes("email-already-in-use") ? "Email already registered" : msg);
+      toast.error(msg.includes("email-already-in-use") ? "Username already registered" : msg);
     } finally {
       setCreating(false);
     }
@@ -278,27 +312,7 @@ function AdminUsersPage() {
                 </FormField>
               </div>
 
-              <FormField label="Email *">
-                <input
-                  type="email"
-                  value={form.email}
-                  onChange={(e) => setField("email", e.target.value)}
-                  placeholder="tc@railway.gov.in"
-                  className="field-input"
-                />
-              </FormField>
-
-              <FormField label="Password * (min 6 chars)">
-                <input
-                  type="password"
-                  value={form.password}
-                  onChange={(e) => setField("password", e.target.value)}
-                  placeholder="Set a secure password"
-                  className="field-input"
-                />
-              </FormField>
-
-              <div className="grid grid-cols-2 gap-3">
+                            <div className="grid grid-cols-2 gap-3">
                 <FormField label="Division">
                   <input
                     value={form.division ?? ""}
@@ -317,16 +331,54 @@ function AdminUsersPage() {
                 </FormField>
               </div>
 
-              <FormField label="Role">
-                <select
-                  value={form.role}
-                  onChange={(e) => setField("role", e.target.value as "tc" | "admin")}
-                  className="field-input"
-                >
-                  <option value="tc">TC (Collector)</option>
-                  <option value="admin">Admin</option>
-                </select>
-              </FormField>
+              <div className="grid grid-cols-2 gap-3">
+                <FormField label="Designation">
+                  <select
+                    value={form.designation ?? "TTE"}
+                    onChange={(e) => setField("designation", e.target.value as Designation)}
+                    className="field-input"
+                  >
+                    {DESIGNATIONS.map((d) => <option key={d} value={d}>{d}</option>)}
+                  </select>
+                </FormField>
+                <FormField label="Role">
+                  <select
+                    value={form.role}
+                    onChange={(e) => setField("role", e.target.value as "tc" | "admin")}
+                    className="field-input"
+                  >
+                    <option value="tc">TC (Collector)</option>
+                    <option value="admin">Admin</option>
+                  </select>
+                </FormField>
+              </div>
+
+              <div className="rounded-xl border border-border bg-muted/40 p-3">
+                <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Login Credentials (auto-generated — share with staff)
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <FormField label="Username *">
+                    <input
+                      value={form.username}
+                      onChange={(e) => setField("username", e.target.value.toUpperCase())}
+                      className="field-input font-mono"
+                    />
+                  </FormField>
+                  <FormField label="Password *">
+                    <input
+                      value={form.password}
+                      onChange={(e) => setField("password", e.target.value)}
+                      className="field-input font-mono"
+                    />
+                  </FormField>
+                </div>
+                {usernameClash && (
+                  <div className="mt-2 flex items-center gap-1.5 text-xs font-semibold text-destructive">
+                    <AlertTriangle className="h-3.5 w-3.5" /> This username is already taken — please edit it.
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="mt-5 flex gap-2">
@@ -416,8 +468,9 @@ function ViewUserModal({ user, onClose }: { user: User; onClose: () => void }) {
             <X className="h-4 w-4" />
           </button>
         </div>
-        <div className="space-y-3 text-sm">
-          <DetailRow label="Email" value={user.email} />
+                <div className="space-y-3 text-sm">
+          <DetailRow label="Username" value={user.username || "—"} />
+          <DetailRow label="Designation" value={user.designation || "—"} />
           <DetailRow label="PF No." value={user.pfNo || user.empId || "—"} />
           <DetailRow label="Mobile" value={user.mobile || "—"} />
           <DetailRow label="Base" value={user.base} />
@@ -455,13 +508,14 @@ function EditUserModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const [form, setForm] = useState<UpdateUserPayload>({
+    const [form, setForm] = useState<UpdateUserPayload>({
     name: user.name,
     pfNo: user.pfNo || user.empId || "",
     mobile: user.mobile,
     base: user.base,
     division: user.division ?? "",
     tteLobbyId: user.tteLobbyId ?? "",
+    designation: user.designation,
     role: user.role,
   });
   const [saving, setSaving] = useState(false);
@@ -558,19 +612,30 @@ function EditUserModal({
             </FormField>
           </div>
 
-          <FormField label="Role">
-            <select
-              value={form.role}
-              onChange={(e) => setField("role", e.target.value as "tc" | "admin")}
-              className="field-input"
-            >
-              <option value="tc">TC (Collector)</option>
-              <option value="admin">Admin</option>
-            </select>
-          </FormField>
+                    <div className="grid grid-cols-2 gap-3">
+            <FormField label="Designation">
+              <select
+                value={form.designation ?? "TTE"}
+                onChange={(e) => setField("designation", e.target.value as Designation)}
+                className="field-input"
+              >
+                {DESIGNATIONS.map((d) => <option key={d} value={d}>{d}</option>)}
+              </select>
+            </FormField>
+            <FormField label="Role">
+              <select
+                value={form.role}
+                onChange={(e) => setField("role", e.target.value as "tc" | "admin")}
+                className="field-input"
+              >
+                <option value="tc">TC (Collector)</option>
+                <option value="admin">Admin</option>
+              </select>
+            </FormField>
+          </div>
 
           <p className="text-xs text-muted-foreground">
-            Email and password cannot be changed here.
+            Username and password cannot be changed here.
           </p>
         </div>
 

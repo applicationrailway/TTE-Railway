@@ -113,7 +113,7 @@ router.post("/users", async (req, res, next) => {
     if (!adminDb || !adminAuth)
       return res.status(503).json({ error: "Firebase Admin not initialized" });
 
-    const { name, email, password, pfNo, mobile, base, division, tteLobbyId, joining, role } = req.body;
+        const { name, email, username, password, pfNo, mobile, base, division, tteLobbyId, designation, joining, role } = req.body;
     if (!name || !email || !password)
       return res.status(400).json({ error: "name, email and password are required" });
 
@@ -128,12 +128,14 @@ router.post("/users", async (req, res, next) => {
     await adminDb.collection("users").doc(userRecord.uid).set({
       name,
       email,
+      username: username ?? "",
       pfNo: pfNo ?? "",
       empId: pfNo ?? "",
       mobile: mobile ?? "",
       base: base ?? "NGP",
       division: division ?? "",
       tteLobbyId: tteLobbyId ?? "",
+      designation: designation ?? "",
       joining: joining ?? new Date().toISOString().slice(0, 10),
       role: role ?? "tc",
       status: "active",

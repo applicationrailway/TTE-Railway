@@ -9,6 +9,9 @@ import { db } from "./config";
 
 export type UserRole = "admin" | "tc";
 export type UserStatus = "active" | "disabled";
+export type Designation = "CCTC" | "CTTI" | "SCTC" | "STE" | "TE" | "TTE" | "TTI";
+
+export const DESIGNATIONS: Designation[] = ["CCTC", "CTTI", "SCTC", "STE", "TE", "TTE", "TTI"];
 
 export interface User {
   id: string;
@@ -16,6 +19,8 @@ export interface User {
   pfNo: string;      // PF Number (alphanumeric)
   empId: string;     // legacy employee ID
   email: string;
+  username?: string;
+  designation?: Designation;
   mobile: string;
  base: string;
   division?: string;
@@ -43,13 +48,15 @@ export async function updateUserStatus(id: string, status: UserStatus) {
 
 export interface CreateUserPayload {
   name: string;
-  email: string;
-  password: string;
+  email: string;       // computed internally as `${username}@tte.internal` — not shown to admin
+  username: string;    // auto-generated: first 4 letters of name
+  password: string;    // auto-generated: last 4 chars of PF No.
   pfNo: string;
   mobile: string;
   base: string;
   division?: string;
   tteLobbyId?: string;
+  designation?: Designation;
   joining?: string;
   role: UserRole;
 }
@@ -75,6 +82,7 @@ export interface UpdateUserPayload {
   base: string;
   division?: string;
   tteLobbyId?: string;
+  designation?: Designation;
   joining?: string;
   role: UserRole;
 }
